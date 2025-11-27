@@ -3,15 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-  "dev": "nodemon src/server.js",
-  "start": "node src/server.js",
-  "lint": "eslint . || true",
-  "seed": "node scripts/seedUser.js"
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "lint": "eslint . || true",
+    "seed": "node scripts/seedUser.cjs",
+    "resetlastlogin": "node scripts/resetLastLogin.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cookie-parser": "~1.4.4",
     "cors": "^2.8.5",
+    "date-fns-tz": "^3.2.0",
     "debug": "~2.6.9",
     "dotenv": "^17.2.3",
     "express": "~4.16.1",
