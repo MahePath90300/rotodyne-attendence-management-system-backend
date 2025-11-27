@@ -2,10 +2,14 @@ var createError = require('http-errors');
 var express = require('express');
 var path = require('path');
 var cookieParser = require('cookie-parser');
+const cors = require('cors');
 var logger = require('morgan');
+const errorHandler = require('./middlewares/errorHandler');
+const { CLIENT_URL } = require('./config/env');
 
 var indexRouter = require('./routes/index');
 var usersRouter = require('./routes/users');
+const authRoutes = require('./routes/auth.route');
 
 var app = express();
 
@@ -18,9 +22,18 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(
+  cors({
+    origin: CLIENT_URL,
+    credentials: true
+  })
+);
 
 app.use('/', indexRouter);
 app.use('/users', usersRouter);
+app.use('/api/v1/auth', authRoutes);
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.use(errorHandler);
 
 // catch 404 and forward to error handler
 app.use(function(req, res, next) {
