@@ -1,7 +1,7 @@
 // src/controllers/auth.controller.js
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
-const { generateToken } = require('../utils/jwt');
+const  generateToken = require('../utils/jwt');
 
 function todayDateStringUTC() {
   // returns YYYY-MM-DD in UTC
