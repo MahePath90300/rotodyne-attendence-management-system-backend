@@ -5,7 +5,6 @@ var cookieParser = require("cookie-parser");
 const cors = require("cors");
 var logger = require("morgan");
 const errorHandler = require("./middlewares/errorHandler");
-const { CLIENT_URL } = require("./config/env");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
@@ -27,7 +26,7 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
 app.use(
   cors({
-    origin: CLIENT_URL,
+    origin: process.env.CLIENT_URL,
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   })
@@ -45,7 +44,7 @@ const generalLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 200,
 });
-app.use(generalLimiter);
+app.use("/api/",generalLimiter);
 
 // catch 404 and forward to error handler
 app.use(function (req, res, next) {
