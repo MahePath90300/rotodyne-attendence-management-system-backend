@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const attendanceSchema = new mongoose.Schema(
+const AttendanceSchema = new mongoose.Schema(
   {
     siteId: { type: String, required: true, index: true }, // e.g. "DADRI", "GARADWARA"
     empNo: { type: String, required: true, index: true }, // employee id
