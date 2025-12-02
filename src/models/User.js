@@ -7,7 +7,7 @@ const userSchema = new mongoose.Schema({
     company:{type:String, required:true},
     site:{type:String, required:true},
     role:{type:String, required:true} ,
-    lastLoginDate: { type: String, default: null }
+    lastSubmissionDate: { type: String, default: null },
 },
 
 {timestamps:true}
