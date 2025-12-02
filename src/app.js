@@ -12,6 +12,7 @@ const rateLimit = require("express-rate-limit");
 var indexRouter = require("./routes/index");
 var usersRouter = require("./routes/users");
 const authRoutes = require("./routes/auth.route");
+const attendanceRoute = require("./routes/attendance.route")
 
 var app = express();
 
@@ -36,6 +37,7 @@ app.use(helmet());
 app.use("/", indexRouter);
 app.use("/users", usersRouter);
 app.use("/api/v1/auth", authRoutes);
+app.use('/api/v1/attendance', attendanceRoute);
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.use(errorHandler);
 
