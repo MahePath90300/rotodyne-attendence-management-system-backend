@@ -33,7 +33,7 @@ function maskUri(uri) {
     console.log('Users sample:', allUsers);
 
     // Try to create admin if not present
-    const adminEmail = 'admin@rotodyne.com';
+    const adminEmail = 'viewer@rotodyne.com';
     const adminExists = await User.findOne({ email: adminEmail });
     if (adminExists) {
       console.log('Admin already exists:', adminEmail);
@@ -43,10 +43,10 @@ function maskUri(uri) {
       const admin = new User({
         email: adminEmail,
         password: pwd,
-        employeeId: 'EMP001',
+        employeeId: 'EMP002',
         company: 'RES',
-        site: 'ALL',
-        role: 'ADMIN',
+        site: 'DADRI',
+        role: 'VIEWER',
         lastLoginDate: null
       });
       const saved = await admin.save();

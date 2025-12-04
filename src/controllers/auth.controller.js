@@ -1,16 +1,13 @@
-// src/controllers/auth.controller.js
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
+const Session = require("../models/Session");
 const generateToken = require("../utils/jwt");
 const { validationResult } = require("express-validator");
-const Session = require("../models/Session");
 
 function todayDateStringUTC() {
-  // returns YYYY-MM-DD in UTC
-  return new Date().toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
-// Helper to send cookie options; uses secure in production
 function cookieOptions() {
   return {
     httpOnly: true,
@@ -23,7 +20,7 @@ function cookieOptions() {
 
 exports.login = async function login(req, res, next) {
   try {
-    // express-validator results
+    // 1) express-validator errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res
@@ -31,32 +28,49 @@ exports.login = async function login(req, res, next) {
         .json({ message: "Validation failed", errors: errors.array() });
     }
 
+    // 2) pull fields from body (role etc are optional)
     const { email, password, employeeId, company, site, role } = req.body;
 
-    if (!email || !password || !employeeId || !role) {
-      return res.status(400).json({ message: "Missing required fields" });
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ message: "Email and password are required" });
     }
 
+    // 3) find user in DB
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
+    // 4) check password
     const validPass = await bcrypt.compare(password, user.password);
-    if (!validPass)
+    if (!validPass) {
       return res.status(401).json({ message: "Invalid password" });
+    }
 
-    // Enforce one-login-per-day for SITE_ENGINEER
-    if (String(user.role).toUpperCase() === "SITE_ENGINEER") {
+    // 5) OPTIONAL: enforce that selected role matches DB role
+    const requestedRole = (role || "").toUpperCase();
+    const actualRole = (user.role || "").toUpperCase();
+    if (requestedRole && requestedRole !== actualRole) {
+      return res.status(403).json({
+        message: `You are registered as ${actualRole}, not ${requestedRole}.`,
+      });
+    }
+
+    // 6) one-login-per-day for site engineer
+    const dbRoleUpper = actualRole;
+    if (dbRoleUpper === "SITE_ENGINEER") {
       const today = todayDateStringUTC();
       if (user.lastLoginDate === today) {
-        // Already logged in today — reject with 403
         return res.status(403).json({
           message:
             "Site engineers are allowed to login once per day. You have already logged in today.",
         });
       }
-      // Otherwise, update lastLoginDate below (after token generation)
     }
 
+    // 7) issue JWT – ALWAYS use DB role & site
     const token = generateToken({
       id: user._id,
       email: user.email,
@@ -65,30 +79,34 @@ exports.login = async function login(req, res, next) {
       site: user.site,
     });
 
-    // Set cookie
     res.cookie("token", token, cookieOptions());
 
-    // If SITE_ENGINEER, update lastLoginDate to today (persist)
-    if (String(user.role).toUpperCase() === "SITE_ENGINEER") {
+    // payload returned to frontend
+    const safeUser = {
+      id: user._id,
+      email: user.email,
+      employeeId: user.employeeId,
+      role: user.role,
+      company: user.company,
+      site: user.site,
+      lastLoginDate: user.lastLoginDate,
+    };
+
+    // 8) update lastLoginDate for site engineer
+    if (dbRoleUpper === "SITE_ENGINEER") {
       try {
         user.lastLoginDate = todayDateStringUTC();
-        // Save asynchronously but wait to ensure it's persisted
         await user.save();
       } catch (saveErr) {
-        // Non-fatal (we already issued cookie). Log it and continue.
-        console.error(
-          "Failed to update lastLoginDate for user",
-          user._id,
-          saveErr
-        );
+        console.error("Failed to update lastLoginDate", user._id, saveErr);
       }
     }
 
-    // Optional: record session
+    // 9) optional session record
     try {
       await Session.create({
         user: user._id,
-        date: new Date().toISOString().slice(0, 10),
+        date: todayDateStringUTC(),
         company: user.company,
         site: user.site,
         ip: req.ip || req.headers["x-forwarded-for"] || null,
@@ -98,18 +116,13 @@ exports.login = async function login(req, res, next) {
       console.error("Could not create session record", sessErr);
     }
 
-    res.status(200).json({
+    // 10) final response (only once!)
+    return res.status(200).json({
       message: "Login successful",
-      user: {
-        email: user.email,
-        company: user.company,
-        site: user.site,
-        role: user.role,
-        employeeId: user.employeeId,
-      },
+      user: safeUser,
     });
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    next(err);
   }
 };
 

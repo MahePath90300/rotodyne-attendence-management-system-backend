@@ -18,7 +18,7 @@ const loginValidation = [
     .isLength({ min: 6 })
     .withMessage("Password required (min 6 chars)"),
   body("employeeId").notEmpty().withMessage("Employee ID required"),
-  body("role").notEmpty().withMessage("Role required"),
+  body("role").optional(),
 ];
 
 router.post("/login", loginValidation, loginLimiter, login);
