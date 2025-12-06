@@ -70,6 +70,17 @@ exports.login = async function login(req, res, next) {
       }
     }
 
+    if (actualRole === "SITE_ENGINEER") {
+      const requestedSite = (req.body.site || "").toUpperCase();
+      const dbSite = (user.site || "").toUpperCase();
+
+      if (requestedSite && requestedSite !== dbSite) {
+        return res.status(403).json({
+          message: `You are assigned to site ${user.site}. Please select the same site while logging in.`,
+        });
+      }
+    }
+
     // 7) issue JWT – ALWAYS use DB role & site
     const token = generateToken({
       id: user._id,
