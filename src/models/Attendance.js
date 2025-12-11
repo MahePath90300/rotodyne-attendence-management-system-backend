@@ -9,10 +9,10 @@ const AttendanceSchema = new mongoose.Schema(
 
     // Attendance code: "PP", "P", "AA", "A", "LL", "CC", "WW", "HW", etc.
     // Make it OPTIONAL so OT-only updates don't fail validation.
-    status: { type: String, default: "" },
+    status: { type: String, required: false, default: "" },
 
     // NEW: OT hours recorded for that day
-    otHours: { type: Number, default: 0 },
+    otHours: { type: Number },
 
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     updatedByName: { type: String },

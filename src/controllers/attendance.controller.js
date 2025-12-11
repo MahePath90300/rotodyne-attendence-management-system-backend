@@ -1,4 +1,3 @@
-// src/controllers/attendance.controller.js
 const { format, addDays } = require("date-fns");
 const Employee = require("../models/Employee");
 const Holiday = require("../models/Holiday");
@@ -64,9 +63,13 @@ exports.getSiteAttendance = async (req, res, next) => {
     }).lean();
 
     const holidays = holidayDocs.map((h) => h.date); // ["2025-12-25", ...]
+    const siteType = (employees[0] && employees[0].siteType) || "Supply";
+
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
 
     res.json({
       siteTitle: `NTPC ${siteId}`,
+      siteType,
       employees,
       attendanceMap,
       otMap,
@@ -93,11 +96,9 @@ exports.bulkUpdate = async function (req, res, next) {
       : [];
 
     if (!updates.length && !otUpdates.length && !summaries.length) {
-      return res
-        .status(400)
-        .json({
-          message: "Nothing to update (updates / otUpdates / summaries empty)",
-        });
+      return res.status(400).json({
+        message: "Nothing to update (updates / otUpdates / summaries empty)",
+      });
     }
 
     // --- Basic validation on status updates only (OT rows may not have status) ---
@@ -167,19 +168,33 @@ exports.bulkUpdate = async function (req, res, next) {
     for (const [key, fields] of upsertMap.entries()) {
       const [empNo, date] = key.split("|");
 
+      const setObj = {
+        // only include fields that should actually be set
+        siteId,
+        empNo,
+        date,
+        updatedBy: req.user._id,
+        updatedByName: req.user.email || req.user.name || "",
+        updatedAt: new Date(),
+      };
+
+      // status: only set if provided (keep empty string if desired — or omit to avoid blank)
+      if (typeof fields.status !== "undefined") {
+        setObj.status = fields.status;
+      }
+
+      // otHours: include only when provided
+      if (typeof fields.otHours !== "undefined") {
+        setObj.otHours = fields.otHours;
+      }
+      if (typeof fields.otHours !== "undefined")
+        setObj.otHours = fields.otHours;
+
       bulkOps.push({
         updateOne: {
           filter: { siteId, empNo, date },
           update: {
-            $set: {
-              ...fields,
-              siteId,
-              empNo,
-              date,
-              updatedBy: req.user._id,
-              updatedByName: req.user.email || req.user.name || "",
-              updatedAt: new Date(),
-            },
+            $set: setObj,
           },
           upsert: true,
         },
@@ -187,12 +202,33 @@ exports.bulkUpdate = async function (req, res, next) {
     }
 
     if (bulkOps.length) {
-      await Attendance.bulkWrite(bulkOps, { ordered: false });
+      const bulkData = await Attendance.bulkWrite(bulkOps, { ordered: false });
+      console.log(bulkData);
     }
 
-    // (Optional) handle summaries here – e.g. AttendanceSummary model
-    // For now you can ignore them or just log them:
-    // if (summaries.length) { await AttendanceSummary.bulkWrite(...) }
+    // Persist summaries (upsert-like)
+    if (summaries && summaries.length) {
+      const summaryBulk = summaries.map((s) => ({
+        updateOne: {
+          filter: {
+            siteId: s.siteId,
+            empNo: s.empNo,
+            year: s.year,
+            month: s.month,
+          },
+          update: {
+            $set: {
+              ...s,
+              updatedAt: new Date(),
+            },
+          },
+          upsert: true,
+        },
+      }));
+      if (summaryBulk.length) {
+        await AttendanceSummary.bulkWrite(summaryBulk, { ordered: false });
+      }
+    }
 
     if (userRole === "SITE_ENGINEER") {
       await User.updateOne(

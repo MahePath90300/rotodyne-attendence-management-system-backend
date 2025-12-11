@@ -20,8 +20,8 @@ app.set("views", path.join(__dirname, "views"));
 app.set("view engine", "jade");
 
 app.use(logger("dev"));
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
 app.use(
@@ -39,6 +39,7 @@ app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/attendance", attendanceRoute);
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.use(errorHandler);
+app.use("/api/v1/wage", require("./routes/wage.routes"));
 
 const generalLimiter = rateLimit({
   windowMs: 60 * 1000,
