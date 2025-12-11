@@ -40,7 +40,7 @@ function maskUri(uri) {
     console.log("Users sample:", allUsers);
 
     // Try to create admin if not present
-    const adminEmail = "admin2@rotodyne.com";
+    const adminEmail = "praveen@rotodyne.com";
     const adminExists = await User.findOne({ email: adminEmail });
     if (adminExists) {
       console.log("Admin already exists:", adminEmail);
@@ -50,10 +50,10 @@ function maskUri(uri) {
       const admin = new User({
         email: adminEmail,
         password: pwd,
-        employeeId: "EMP003",
+        employeeId: "VR001",
         company: "RES",
         site: "GADARWARA",
-        role: "ADMIN",
+        role: "VIEWER",
         lastLoginDate: null,
       });
       const saved = await admin.save();
@@ -61,7 +61,7 @@ function maskUri(uri) {
     }
 
     // Create SITE_ENGINEER if not present
-    const engEmail = "engineer@rotodyne.com";
+    const engEmail = "vinay@rotodyne.com";
     const engExists = await User.findOne({ email: engEmail });
     if (engExists) {
       console.log("Engineer already exists:", engEmail);
@@ -73,7 +73,7 @@ function maskUri(uri) {
         password: pwd2,
         employeeId: "ENG001",
         company: "RES",
-        site: "RES-01",
+        site: "GADARWARA",
         role: "SITE_ENGINEER",
         lastLoginDate: null,
       });

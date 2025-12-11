@@ -16,6 +16,7 @@ const AttendanceSummarySchema = new mongoose.Schema(
     totalCasualLeaves: { type: Number, default: 0 },
     totalDaysWorked: { type: Number, default: 0 },
     totalCalendarDays: { type: Number, default: 0 },
+    totalHolidays : {type:Number, default:0}
   },
   { timestamps: true }
 );
