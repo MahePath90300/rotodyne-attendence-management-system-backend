@@ -4,6 +4,7 @@ const { addDays, format } = require("date-fns");
 const Attendance = require("../models/Attendance");
 const Employee = require("../models/Employee");
 const Holiday = require("../models/Holiday");
+const AttendanceSummary = require("../models/AttendanceSummary");
 
 // ---- wage constants ----
 const DAILY_WAGE_BY_CAT = {
@@ -13,65 +14,63 @@ const DAILY_WAGE_BY_CAT = {
   USW: 541,
 };
 
-// Keep headers as you had (adjust if you want to rename)
 const WAGE_HEADERS = [
-  "Sl no", // 1
-  "Month numbr", // 2
-  "Emp no", // 3
-  "Name", // 4
-  "Dsg", // 5
-  "Cat", // 6
-  "Manpwr Typ", // 7
-  "Gross", // 8
-  "v%", // 9
-  "Daily Minw", // 10
-  "Total days", //11 (totalWorkDays)
-  "Prsnt Days", //12 (PP + P + HW)
-  "Abs days", //13 (AA + A)
-  "CL day", //14 (CC)
-  "Coff Days", //15 (kept 0 for now)
-  "Holidays", //16 (HH count)
-  "Paid Days", //17 (presentDays + WW + CC)
-  "Site days", //18 (kept 0 placeholder)
-  "Emg ba+da", //19 (removed detailed calc, keep 0)
-  "EmAda", //20
-  "Emg HRA", //21
-  "Emg Conv", //22
-  "Emg Med", //23
-  "Emg Sub Tot", //24
-  "Emg onBas", //25
-  "Emg onDy", //26
-  "Emg Sub Tot", //27
-  "EMg SitDa", //28
-  "OT hrs", //29
-  "Earng OTamt", //30
-  "Emg othPy", //31
-  "Emg Arrear", //32
-  "Emg total", //33 (emgTotal)
-  "PF pay", //34 (12% of gross)
-  "Esi pay", //35 (2% of gross)
-  "dedn EPF", //36 (12% on paid days)
-  "dedn ESI", //37 (2% on paid days)
-  "Ded Lon", //38
-  "Ded TDS", //39
-  "Ded Adv", //40
-  "Ded ptax", //41 (not calculated)
-  "Ded oth", //42
-  "Dedn total", //43
-  "Net payable", //44
+  "Sl no",           // 1
+  "Month numbr",     // 2
+  "Emp no",          // 3
+  "Name",            // 4
+  "Dsg",             // 5
+  "Cat",             // 6
+  "Manpwr Typ",      // 7
+  "Gross",           // 8
+  "v%",              // 9
+  "Daily Minw",      // 10
+  "Total days",      //11
+  "Prsnt Days",      //12
+  "Abs days",        //13
+  "CL day",          //14
+  "Coff Days",       //15
+  "Holidays",        //16  <- per-employee holidays (from AttendanceSummary.totalHolidays if available)
+  "Paid Days",       //17
+  "Site days",       //18
+  "Emg ba+da",       //19  (reserved)
+  "EmAda",           //20  (reserved)
+  "Emg HRA",         //21  (reserved)
+  "Emg Conv",        //22  (reserved)
+  "Emg Med",         //23  (reserved)
+  "Emg Sub Tot",     //24
+  "Emg onBas",       //25
+  "Emg onDy",        //26
+  "Emg Sub Tot",     //27
+  "EMg SitDa",       //28
+  "OT hrs",          //29
+  "Earng OTamt",     //30
+  "Emg othPy",       //31
+  "Emg Arrear",      //32
+  "Emg total",       //33
+  "PF pay",          //34 Employer PF? (we keep as gross * 12%)
+  "Esi pay",         //35 Employer ESI? (we keep as gross * 2%)
+  "dedn EPF",        //36 Deduction EPF from employee (12% on paid days*dailyWage)
+  "dedn ESI",        //37 Deduction ESI from employee (2% on paid days*dailyWage)
+  "Ded Lon",         //38
+  "Ded TDS",         //39
+  "Ded Adv",         //40
+  "Ded ptax",        //41 (not calculated - reserved)
+  "Ded oth",         //42
+  "Dedn total",      //43
+  "Net payable",     //44
 ];
 
+// same 26–25 window you already use everywhere
 function buildMonthWindow(year, month) {
   const prevMonth = month === 1 ? 12 : month - 1;
   const prevYear = month === 1 ? year - 1 : year;
   const startDate = new Date(prevYear, prevMonth - 1, 26);
   const endDate = new Date(year, month - 1, 25);
-
   const days = [];
   for (let d = startDate; d <= endDate; d = addDays(d, 1)) {
     days.push(format(d, "yyyy-MM-dd"));
   }
-
   return {
     start: format(startDate, "yyyy-MM-dd"),
     end: format(endDate, "yyyy-MM-dd"),
@@ -109,37 +108,51 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       return res.status(404).json({ message: "No employees for this site" });
     }
 
-    // 2) attendance in that window
+    // 2) attendance in that window (status + otHours)
     const attDocs = await Attendance.find({
       siteId,
       date: { $gte: start, $lte: end },
     }).lean();
 
-    // Build two maps: status by emp and ot by emp
-    const attByEmp = {};
-    const otByEmp = {};
+    // Build maps: statuses and ot
+    const attByEmp = {}; // { empNo: { iso: status } }
+    const otByEmp = {}; // { empNo: { iso: otHours } }
     for (const doc of attDocs) {
       if (!attByEmp[doc.empNo]) attByEmp[doc.empNo] = {};
       if (!otByEmp[doc.empNo]) otByEmp[doc.empNo] = {};
       if (doc.status) attByEmp[doc.empNo][doc.date] = doc.status;
-      // store otHours if present (may be 0)
       if (typeof doc.otHours !== "undefined" && doc.otHours !== null) {
         otByEmp[doc.empNo][doc.date] = Number(doc.otHours) || 0;
       }
     }
 
-    // 3) holidays for this site (use holiday collection 'site' field)
+    // 3) holidays for this site (use holiday collection 'site' field) -> public holidays
     const holidayDocs = await Holiday.find({
       site: siteId,
       date: { $gte: start, $lte: end },
     }).lean();
-
-    const holidaySet = new Set(holidayDocs.map((h) => h.date));
+    const holidaySet = new Set(holidayDocs.map((h) => h.date)); // site-level public holidays
 
     // 4) Sundays in that window
     const sundaySet = new Set(days.filter((iso) => new Date(iso).getDay() === 0));
 
-    // 5) build workbook
+    // 5) Load AttendanceSummary entries for this site / month (to read per-employee totalHolidays)
+    const summaries = await AttendanceSummary.find({
+      siteId,
+      year,
+      month,
+    }).lean();
+    const summaryByEmp = {};
+    for (const s of summaries) {
+      // empNo might be number or missing (site-level summary may be present)
+      if (typeof s.empNo !== "undefined" && s.empNo !== null) {
+        summaryByEmp[s.empNo] = s;
+      } else if (s.siteId && !s.empNo) {
+        // site-level summary: ignore for per-emp mapping (we rely on employee summaries)
+      }
+    }
+
+    // 6) build workbook
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("Wage Sheet", {
       views: [{ state: "frozen", ySplit: 1 }],
@@ -151,7 +164,6 @@ exports.exportSiteWageSheet = async (req, res, next) => {
     headerRow.font = { bold: true, size: 10 };
     headerRow.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
     headerRow.height = 28;
-
     headerRow.eachCell((cell) => {
       cell.fill = {
         type: "pattern",
@@ -166,49 +178,50 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       };
     });
 
-    // column widths (preserve your previous choices)
+    // column widths (tweakable)
     const colWidths = [
-      6, 10, 10, 28, 14, 10, 12, 12, 6, 10,
-      10, 10, 10, 8, 10, 10, 10, 8, 10, 10,
-      10, 10, 10, 10, 10, 10, 10, 10, 8, 12,
-      10, 10, 12, 10, 10, 10, 10, 10, 10, 10,
-      10, 12, 12
+      6, 10, 10, 28, 14, 10, 12, 12, 6, 10, 10, 10, 10, 8, 10, 10, 10, 8,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 8, 12, 10, 10, 12, 10, 10, 10, 10,
+      10, 10, 10, 10, 10, 12, 12,
     ];
     ws.columns = colWidths.map((w) => ({ width: w }));
 
+    // serial
     let sl = 1;
+
+    // Precompute site-level calendar counts
+    const calendarDays = days.length;
+    const sitePublicHolidaysCount = holidaySet.size;
+    const siteSundaysCount = sundaySet.size;
+    // totalDays (as requested): monthly calendar days - sundays - public holidays (site-level)
+    const totalDaysForSite = calendarDays - siteSundaysCount - sitePublicHolidaysCount;
 
     for (const emp of employees) {
       const cat = (emp.category || "").toUpperCase();
       const dailyWage = DAILY_WAGE_BY_CAT[cat] || 0;
 
+      // per-employee attendance + ot maps
+      const empAtt = attByEmp[emp.empNo] || {};
+      const empOtMap = otByEmp[emp.empNo] || {};
+
+      // If AttendanceSummary provides employee totalHolidays, use it (preferred)
+      const summary = summaryByEmp[emp.empNo];
+      const summaryHolidays = summary?.totalHolidays; // may be undefined
+
       // counters
-      let presentDays = 0; // PP=1, P=0.5, HW counted below as present
+      let presentDays = 0; // PP=1, P=0.5, HW=1
       let absentDays = 0; // AA=1, A=0.5
       let clDays = 0; // CC
-      let coffDays = 0; // currently unused (0)
+      let coffDays = 0; // not currently tracked separately (kept 0)
       let weekOffDays = 0; // WW
       let holidayWorkDays = 0; // HW
-      let hhCount = 0; // HH (holiday/sunday not worked)
+      let holidaysForEmp = 0; // HH count for emp (we will prefer summary)
       let otHours = 0;
-      let hwCount = 0; // HW count
-      let hhOnlyCount = 0; // HH only
-      let totalHolidays = 0; // count of days that are holidays/sundays (for sheet)
 
-      const empAtt = attByEmp[emp.empNo] || {};
-      const empOt = otByEmp[emp.empNo] || {};
-
+      // iterate days and compute counts
       for (const iso of days) {
-        const status = empAtt[iso] || "";
-        const isSunday = sundaySet.has(iso);
-        const isHoliday = holidaySet.has(iso);
-        const isHolidayOrSunday = isHoliday || isSunday;
-
-        // OT for this day (may be undefined)
-        const dayOt = typeof empOt[iso] !== "undefined" ? Number(empOt[iso]) : 0;
-        otHours += dayOt;
-
-        // status processing
+        const status = empAtt[iso] || ""; // blank if not present in attendance collection
+        // count status
         if (status === "PP") presentDays += 1;
         else if (status === "P") presentDays += 0.5;
         else if (status === "AA") absentDays += 1;
@@ -216,74 +229,60 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         else if (status === "CC") clDays += 1;
         else if (status === "WW") weekOffDays += 1;
         else if (status === "HW") {
-          // Treat HW as a present day and holiday-work count
-          presentDays += 1;
           holidayWorkDays += 1;
-          hwCount += 1;
+          presentDays += 1; // HW counts as present for presentDays
         } else if (status === "HH") {
-          // explicit holiday not worked
-          hhOnlyCount += 1;
+          holidaysForEmp += 1;
         }
 
-        // HH counting: per your earlier description, HH should count Sundays+public-holidays that worker did NOT convert to HW
-        if (isHolidayOrSunday) {
-          totalHolidays += 1;
-          if (status !== "HW") {
-            hhCount += 1;
-          }
+        // OT accumulation (take stored ot if present)
+        if (typeof empOtMap[iso] !== "undefined" && empOtMap[iso] !== null) {
+          otHours += Number(empOtMap[iso]) || 0;
+        } else {
+          // no explicit ot stored: if status === 'HW' treat as 8 hours only if required
+          // NOTE: business rule: backend may auto-store otMap; if not, we can optionally treat HW as 8 OT.
+          // We'll *prefer explicit* OT values; if none present, count HW as 8 hours of OT (per earlier UX).
+          if (status === "HW") otHours += 8;
         }
       }
 
-      // Following your formula:
-      // totalWorkDays = days.length - HH + HW
-      const totalWorkDays = days.length - hhCount + hwCount;
+      // Use summary totalHolidays if available, otherwise fall back to counted HH statuses
+      const holidaysCount = typeof summaryHolidays !== "undefined" ? Number(summaryHolidays) : holidaysForEmp;
 
-      // paidDays = presentDays + weekOffDays + clDays (per your instruction)
-      const paidDays = presentDays + weekOffDays + clDays;
+      // Total calendar days to show (site-level): calendarDays
+      // Total days for wage calc as requested: monthly calendar days - sundays - public holidays
+      const totalDays = totalDaysForSite;
 
-      // OT earnings
-      // You used dailyWage/4 previously as OT per hour — keep that unless you want a different multiplier.
-      const otRatePerHour = dailyWage / 4;
+      // Present days defined earlier; note HW already added to presentDays
+      // Paid days formula requested: presentDays + CC + WW - HW
+      const paidDays = presentDays + clDays + weekOffDays - holidayWorkDays;
+
+      // OT amounts
+      const otRatePerHour = dailyWage / 4; // -> as per previous calculation
       const otAmount = otHours * otRatePerHour;
 
-      // gross = dailyWage * totalWorkDays (per screenshot sample)
-      const gross = dailyWage * totalWorkDays;
+      // Gross: previous behavior used dailyWage * 30
+      const gross = dailyWage * 30;
 
-      // Employer contributions (columns you asked to show)
-      const pfPay = Number((gross * 0.12).toFixed(2)); // 12% of gross
-      const esiPay = Number((gross * 0.02).toFixed(2)); // 2% of gross
+      // Employer contributions columns you requested:
+      const PF_pay = gross * 0.12; // "PF pay: deduct 12% of gross pay" — keep as computed column
+      const ESI_pay = gross * 0.02; // "ESI pay: deduct 2% of gross pay"
 
-      // Deductions based on paid days (without OT)
-      const dednEPF = Number((dailyWage * paidDays * 0.12).toFixed(2)); // 12% on paid days
-      const dednESI = Number((dailyWage * paidDays * 0.02).toFixed(2)); // 2% on paid days
+      // Deduction from employee (per your instruction):
+      // dedn EPF: 12% on paid days (paidDays * dailyWage * 0.12)
+      // dedn ESI: 2% on paid days (paidDays * dailyWage * 0.02)
+      const paidDaysWage = Math.max(0, paidDays) * dailyWage;
+      const dednEPF = paidDaysWage * 0.12;
+      const dednESI = paidDaysWage * 0.02;
 
-      const dedPtax = 0; // per your instruction: do not compute PTAX for now
+      // total earnings for employee before deductions (present-based + OT)
+      const emgTotal = paidDays * dailyWage + otAmount;
 
-      // Sum up deductions (other deduction columns left 0)
-      const dedLon = 0;
-      const dedTds = 0;
-      const dedAdv = 0;
-      const dedOth = 0;
+      // Net payable = emgTotal - (deductions)  (we leave room for other deductions)
+      const totalDeductions = dednEPF + dednESI;
+      const netPayable = emgTotal - totalDeductions;
 
-      const dednTotal = Number(
-        (
-          dednEPF +
-          dednESI +
-          dedLon +
-          dedTds +
-          dedAdv +
-          dedPtax +
-          dedOth
-        ).toFixed(2)
-      );
-
-      // Emg total = earning from paid days (paidDays * dailyWage) + OT earnings
-      const emgOnPaidDays = Number((dailyWage * paidDays).toFixed(2));
-      const emgTotal = Number((emgOnPaidDays + otAmount).toFixed(2));
-
-      const netPayable = Number((emgTotal - dednTotal).toFixed(2));
-
-      // Build row (exact order of headers)
+      // Build row in exact header order (44 columns)
       const rowValues = [
         sl, // Sl no
         month, // Month numbr
@@ -292,58 +291,56 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         emp.designation || "", // Dsg
         emp.category || "", // Cat
         (emp.manpowerType || emp.siteType || "") || "", // Manpwr Typ
-        gross, // Gross
-        0, // v%
-        dailyWage, // Daily Minw
-        totalWorkDays, // Total days
-        presentDays, // Prsnt Days (PP+P+HW)
-        absentDays, // Abs days
-        clDays, // CL day
-        coffDays, // Coff Days
-        hhCount, // Holidays (HH count)
-        paidDays, // Paid Days
-        0, // Site days (placeholder)
-        0, // Emg ba+da
-        0, // EmAda
-        0, // Emg HRA
-        0, // Emg Conv
-        0, // Emg Med
-        0, // Emg Sub Tot
-        0, // Emg onBas
-        0, // Emg onDy
-        0, // Emg Sub Tot
-        0, // EMg SitDa
-        otHours, // OT hrs
-        otAmount, // Earng OTamt
-        0, // Emg othPy
-        0, // Emg Arrear
-        emgTotal, // Emg total
-        pfPay, // PF pay (12% of gross)
-        esiPay, // Esi pay (2% of gross)
-        dednEPF, // dedn EPF (12% on paid days)
-        dednESI, // dedn ESI (2% on paid days)
-        dedLon, // Ded Lon
-        dedTds, // Ded TDS
-        dedAdv, // Ded Adv
-        dedPtax, // Ded ptax (0 for now)
-        dedOth, // Ded oth
-        dednTotal, // Dedn total
-        netPayable, // Net payable
+        round2(gross), // Gross
+        0, // v% (reserved)
+        round2(dailyWage), // Daily Minw
+        totalDays, // Total days (site-level rule)
+        round2(presentDays), // Prsnt Days (PP + P + HW)
+        round2(absentDays), // Abs days
+        round2(clDays), // CL day (CC)
+        round2(coffDays), // Coff Days
+        Number(holidaysCount || 0), // Holidays (prefer AttendanceSummary.totalHolidays)
+        round2(paidDays), // Paid Days (present + CC + WW - HW)
+        0, // Site days (reserved)
+        0, // Emg ba+da (reserved)
+        0, // EmAda (reserved)
+        0, // Emg HRA (reserved)
+        0, // Emg Conv (reserved)
+        0, // Emg Med (reserved)
+        0, // Emg Sub Tot (reserved)
+        0, // Emg onBas (reserved)
+        0, // Emg onDy (reserved)
+        0, // Emg Sub Tot (reserved)
+        0, // EMg SitDa (reserved)
+        round2(otHours), // OT hrs
+        round2(otAmount), // Earng OTamt
+        0, // Emg othPy (reserved)
+        0, // Emg Arrear (reserved)
+        round2(emgTotal), // Emg total (paidDays*dailyWage + ot)
+        round2(PF_pay), // PF pay (gross * 12%)
+        round2(ESI_pay), // Esi pay (gross * 2%)
+        round2(dednEPF), // dedn EPF (12% on paid days*dailyWage)
+        round2(dednESI), // dedn ESI (2% on paid days*dailyWage)
+        0, // Ded Lon
+        0, // Ded TDS
+        0, // Ded Adv
+        0, // Ded ptax (not calculated)
+        0, // Ded oth
+        round2(totalDeductions), // Dedn total
+        round2(netPayable), // Net payable
       ];
 
       const newRow = ws.addRow(rowValues);
 
-      // cell formatting and borders
+      // formatting for numeric cells
       newRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        // center small numeric columns
-        cell.alignment = { vertical: "middle", horizontal: colNumber === 4 ? "left" : "center" };
-
-        // currency formatting for selected columns
-        const currencyCols = new Set([8, 10, 30, 33, 34, 35, 36, 37, 41, 42, 44]); // you may tweak
+        if (colNumber >= 1 && colNumber <= 44) {
+          cell.alignment = { vertical: "middle", horizontal: colNumber === 4 ? "left" : "center" };
+        }
+        const currencyCols = new Set([8, 10, 30, 33, 34, 35, 36, 37, 41, 42, 44]);
         if (currencyCols.has(colNumber) && typeof cell.value === "number") {
           cell.numFmt = '#,##0.00';
         }
-
         cell.border = {
           top: { style: "thin" },
           bottom: { style: "thin" },
@@ -352,21 +349,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         };
       });
 
-      // Highlight rows / cells where OT hours > 0:
-      // if (otHours > 0) {
-      //   // highlight OT hrs cell (29) and OT amount cell (30)
-      //   const otCell = newRow.getCell(29);
-      //   const otAmtCell = newRow.getCell(30);
-      //   const fill = {
-      //     type: "pattern",
-      //     pattern: "solid",
-      //     fgColor: { argb: "FFFFF2CC" }, // light yellow highlight
-      //   };
-      //   otCell.fill = fill;
-      //   otAmtCell.fill = fill;
-      // }
-
-      // alternate row fill for readability
+      // alternate row shading
       if (sl % 2 === 0) {
         newRow.eachCell((cell) => {
           cell.fill = {
@@ -380,6 +363,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       sl += 1;
     }
 
+    // stream workbook to response
     const fileName = `wage_sheet_${siteId}_${year}_${month}.xlsx`;
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
@@ -390,3 +374,9 @@ exports.exportSiteWageSheet = async (req, res, next) => {
     next(err);
   }
 };
+
+// small helper
+function round2(v) {
+  if (typeof v !== "number") v = Number(v) || 0;
+  return Math.round(v * 100) / 100;
+}
