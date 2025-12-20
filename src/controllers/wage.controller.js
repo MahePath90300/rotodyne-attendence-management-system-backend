@@ -1,4 +1,3 @@
-// src/controllers/wage.controller.js
 const ExcelJS = require("exceljs");
 const { addDays, format } = require("date-fns");
 const Attendance = require("../models/Attendance");
@@ -192,9 +191,9 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 
     // column widths (tweakable)
     const colWidths = [
-      6, 10, 10, 28, 14, 10, 12, 12, 6, 10, 10, 10, 10, 8, 10, 10, 10, 8, 10,
-      10, 10, 10, 10, 10, 10, 10, 10, 8, 12, 10, 10, 12, 10, 10, 10, 10, 10, 10,
-      10, 10, 10, 12, 12,
+      6, 10, 8, 26, 10, 10, 10, 10, 5, 10, 12, 8, 8, 8, 8, 8, 6, 6, 10,
+      8, 8, 8, 10, 10, 10, 10, 8, 6, 10, 10, 10, 10, 8, 6, 6, 8, 8, 8,
+      8, 8, 10,
     ];
     ws.columns = colWidths.map((w) => ({ width: w }));
 
@@ -216,16 +215,13 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const summary = summaryByEmp[emp.empNo] || {};
       const summaryHolidays = summary?.totalHolidays; // may be undefined
       const holidaysCount =
-        typeof summaryHolidays !== "undefined"
-          ? Number(summaryHolidays)
-          : "";
+        typeof summaryHolidays !== "undefined" ? Number(summaryHolidays) : 0;
 
       const presentDays = Number(summary.totalPresentDays || 0);
       const weekOffDays = Number(summary.totalWeekOffs || 0);
       const coffDays = Number(summary.totalCOffs || summary.totalCOffDays || 0);
       const otHours = Number(summary.otHours || 0);
-      const totalDaysForSite = calendarDays - weekOffDays;
-
+      const totalDaysForSite = Number(summary.totalDaysWorked)+ Number(summary?.totalHolidays);
       const paidDays = presentDays + coffDays + holidaysCount;
 
       const gross = dailyWage * totalDaysForSite;
@@ -233,38 +229,63 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const perDayGross = (gross / totalDays) * paidDays;
       const erngOtAmt = (dailyWage / 4) * otHours;
       const erngBaDa = dailyWage * paidDays;
-      const erngOnBas = erngBaDa * 0.1744;
-      const erngOnDy = paidDays*50;
+
+      let erngOnBas = 0;
+      let erngOnDuty = 0;
+      let dednESI = 0;
+
+      // =====================
+      // SITE BASED LOGIC
+      // =====================
+      if (siteId === "GADARWARA") {
+        // ❌ No ESI for Gadarwara
+        dednESI = 0;
+
+        // ❌ No Earn on Duty
+        erngOnDuty = 0;
+
+        // ✅ Earn on Basic = 8.33%
+        erngOnBas = erngBaDa * 0.0833;
+      } else if (siteId === "KANIHA") {
+        // ✅ Earn on Basic = 17.44%
+        erngOnBas = erngBaDa * 0.1744;
+
+        // ✅ Earn on Duty
+        erngOnDuty = paidDays * 50;
+
+        dednESI = Math.min(erngBaDa * (0.75 / 100), 1800);
+      }
       const erngHra = (perDayGross - erngBaDa) * 0.5;
       const erngConv = (perDayGross - erngBaDa) * 0.35;
       const erngMed = (perDayGross - erngBaDa) * 0.15;
-      const dednESI = 0;
       const erngArrear = 0;
       const erngOtherPay = 0;
       const erngSiteDa = 0;
-      const erngOnDuty = 0;
-      const erngSubTot1 = erngBaDa + erngHra + erngConv + erngMed;
+      const erngAda = 0;
+      const erngSubTot1 = erngBaDa + erngHra + erngConv + erngMed + erngAda;
       const erngSubTot2 = erngSubTot1 + erngOnBas + erngOnDuty;
       const erngTotal =
-        erngArrear +
-        erngOtherPay +
-        erngOtAmt +
-        erngSiteDa +
-        erngSubTot2;
+        erngArrear + erngOtherPay + erngOtAmt + erngSiteDa + erngSubTot2;
 
-      const dedOther = erngOnBas;
-      // Use summary totalHolidays if available, otherwise fall back to counted HH statuses
       const dednEPF = Math.min(erngBaDa * 0.12, 1800);
-      // Total calendar days to show (site-level): calendarDays
-      // Total days for wage calc as requested: monthly calendar days - sundays - public holidays
 
-      // Present days defined earlier; note HW already added to presentDays
-      // Paid days formula requested: presentDays + CC + WW - HW
       const paidDaysWage = Math.max(0, paidDays) * dailyWage;
-      const dednTotal = dednEPF + dedOther;
-      const totalDeductions = dednEPF + dednESI;
+      const dednLon = 0;
+      const dednTds = 0;
+      const dednAdv = 0;
+      const dednPtax = 0;
+      const dednOther = 0;
+      const dednTotal =
+        dednEPF + dednESI + dednLon + dednTds + dednAdv + dednPtax + dednOther;
       const netPayable = erngTotal - dednTotal;
-      const absDays = totalDays - paidDays;
+    
+      let absDays = totalDays - paidDays;
+
+      if(absDays>=0){
+        absDays = totalDays - paidDays
+      }else{
+        absDays = 0
+      }
 
       const rowValues = [
         sl, // Sl no
@@ -282,7 +303,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         round2(absDays), // Abs days
         // round2(weekOffDays), // CL day (CC)
         round2(coffDays), // Coff Days
-       round2( Number(holidaysCount || 0)), // Holidays (prefer AttendanceSummary.totalHolidays)
+        round2(Number(holidaysCount || 0)), // Holidays (prefer AttendanceSummary.totalHolidays)
         round2(paidDays), // Paid Days (present + CC + WW - HW)
         0, // Site days (reserved)
         round2(erngBaDa), // Emg ba+da (reserved)
@@ -292,7 +313,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         round2(erngMed), // Emg Med (reserved)
         round2(erngSubTot1), // Emg Sub Tot (reserved)
         round2(erngOnBas), // Emg onBas (reserved)
-        round2(erngOnDy),
+        round2(erngOnDuty),
         round2(erngSubTot2), // Emg Sub Tot (reserved)
         0, // EMg SitDa (reserved)
         round2(otHours), // OT hrs
@@ -302,11 +323,11 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         round2(erngTotal), // Emg total (paidDays*dailyWage + ot)
         round2(dednEPF), // dedn EPF (12% on paid days*dailyWage)
         round2(dednESI), // dedn ESI (2% on paid days*dailyWage)
-        0, // Ded Lon
-        0, // Ded TDS
-        0, // Ded Adv
-        0, // Ded ptax (not calculated)
-        round2(dedOther), // Ded oth
+        round2(dednLon), // Ded Lon
+        round2(dednTds), // Ded TDS
+        round2(dednAdv), // Ded Adv
+        round2(dednPtax), // Ded ptax (not calculated)
+        round2(dednOther), // Ded oth
         round2(dednTotal), // Dedn total
         round2(netPayable), // Net payable
       ];
