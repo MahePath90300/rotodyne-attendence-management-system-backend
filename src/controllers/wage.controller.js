@@ -17,6 +17,7 @@ const WAGE_HEADERS = [
   "Sl No",
   "Month",
   "Emp No",
+  "Site",
   "Employee Name",
   "Designation",
   "Category",
@@ -37,7 +38,7 @@ const WAGE_HEADERS = [
   "Erng BA+DA",
   "Erng ADA",
   "Erng HRA",
-  "Erng Conveyance",
+  "Erng Conv",
   "Erng Medical",
   "Erng Sub Total",
   "Erng On Basic",
@@ -191,9 +192,8 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 
     // column widths (tweakable)
     const colWidths = [
-      6, 10, 8, 26, 10, 10, 10, 10, 5, 10, 12, 8, 8, 8, 8, 8, 6, 6, 10,
-      8, 8, 8, 10, 10, 10, 10, 8, 6, 10, 10, 10, 10, 8, 6, 6, 8, 8, 8,
-      8, 8, 10,
+      6, 10, 8, 8, 26, 12, 10, 10, 10, 5, 10, 12, 8, 8, 8, 8, 8, 6, 6, 10, 8, 8,
+      8, 10, 10, 10, 10, 8, 6, 10, 10, 8, 10, 8, 8, 6, 8, 8, 8, 8, 8, 10,
     ];
     ws.columns = colWidths.map((w) => ({ width: w }));
 
@@ -202,7 +202,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 
     // Precompute site-level calendar counts
     const calendarDays = days.length;
-  
+
     for (const emp of employees) {
       const cat = (emp.category || "").toUpperCase();
       const dailyWage = DAILY_WAGE_BY_CAT[cat] || 0;
@@ -221,7 +221,8 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const weekOffDays = Number(summary.totalWeekOffs || 0);
       const coffDays = Number(summary.totalCOffs || summary.totalCOffDays || 0);
       const otHours = Number(summary.otHours || 0);
-      const totalDaysForSite = Number(summary.totalDaysWorked)+ Number(summary?.totalHolidays);
+      const totalDaysForSite =
+        Number(summary.totalDaysWorked) + Number(summary?.totalHolidays);
       const paidDays = presentDays + coffDays + holidaysCount;
 
       const gross = dailyWage * totalDaysForSite;
@@ -253,8 +254,14 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         // ✅ Earn on Duty
         erngOnDuty = paidDays * 50;
 
-        dednESI = Math.min(erngBaDa * (0.75 / 100), 1800);
+        // ✅ ESI only if Gross < 21000
+        if (gross < 21000) {
+          dednESI = Math.min(erngBaDa * 0.0075, 1800);
+        } else {
+          dednESI = 0;
+        }
       }
+
       const erngHra = (perDayGross - erngBaDa) * 0.5;
       const erngConv = (perDayGross - erngBaDa) * 0.35;
       const erngMed = (perDayGross - erngBaDa) * 0.15;
@@ -278,19 +285,14 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const dednTotal =
         dednEPF + dednESI + dednLon + dednTds + dednAdv + dednPtax + dednOther;
       const netPayable = erngTotal - dednTotal;
-    
-      let absDays = totalDays - paidDays;
 
-      if(absDays>=0){
-        absDays = totalDays - paidDays
-      }else{
-        absDays = 0
-      }
+      let absDays = totalDays - paidDays;
 
       const rowValues = [
         sl, // Sl no
         month, // Month numbr
         emp.empNo || "", // Emp no
+        siteId,
         emp.name || "", // Name
         emp.designation || "", // Dsg
         emp.category || "", // Cat
@@ -322,14 +324,14 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         0, // Emg Arrear (reserved)
         round2(erngTotal), // Emg total (paidDays*dailyWage + ot)
         round2(dednEPF), // dedn EPF (12% on paid days*dailyWage)
-        round2(dednESI), // dedn ESI (2% on paid days*dailyWage)
+        Math.ceil(dednESI), // dedn ESI (2% on paid days*dailyWage)
         round2(dednLon), // Ded Lon
         round2(dednTds), // Ded TDS
         round2(dednAdv), // Ded Adv
         round2(dednPtax), // Ded ptax (not calculated)
         round2(dednOther), // Ded oth
-        round2(dednTotal), // Dedn total
-        round2(netPayable), // Net payable
+        Math.ceil(dednTotal), // Dedn total
+        Math.floor(netPayable), // Net payable
       ];
 
       const newRow = ws.addRow(rowValues);
@@ -342,12 +344,12 @@ exports.exportSiteWageSheet = async (req, res, next) => {
             horizontal: colNumber === 4 ? "left" : "center",
           };
         }
-        const currencyCols = new Set([
-          8, 10, 30, 33, 34, 35, 36, 37, 41, 42, 44,
-        ]);
-        if (currencyCols.has(colNumber) && typeof cell.value === "number") {
-          cell.numFmt = "#,##0.00";
-        }
+        // const currencyCols = new Set([
+        //   8, 10, 30, 33, 34, 35, 36, 37, 41, 42, 44,
+        // ]);
+        // if (currencyCols.has(colNumber) && typeof cell.value === "number") {
+        //   cell.numFmt = "#,##0.00";
+        // }
         cell.border = {
           top: { style: "thin" },
           bottom: { style: "thin" },
@@ -388,5 +390,5 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 // small helper
 function round2(v) {
   if (typeof v !== "number") v = Number(v) || 0;
-  return Math.round(v * 100) / 100;
+  return Math.round(v);
 }

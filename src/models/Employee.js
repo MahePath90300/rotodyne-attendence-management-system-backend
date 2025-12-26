@@ -5,6 +5,7 @@ const employeeSchema = new mongoose.Schema({
   name: { type: String, required: true },
   designation: String,
   category: String, // HSW / SSW / USW etc.
+  salary: Number,
   site: { type: String, required: true }, // "DADRI", "GADARWARA"
   siteType: {
     // "Supply" or "BOQ"
