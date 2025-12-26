@@ -223,7 +223,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const otHours = Number(summary.otHours || 0);
       const totalDaysForSite =
         Number(summary.totalDaysWorked) + Number(summary?.totalHolidays);
-      const paidDays = presentDays + coffDays + holidaysCount;
+      const paidDays = presentDays === 0 ? 0 : presentDays + coffDays + holidaysCount;
 
       const gross = dailyWage * totalDaysForSite;
       const totalDays = totalDaysForSite;
