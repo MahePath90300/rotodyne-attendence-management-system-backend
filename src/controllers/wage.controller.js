@@ -13,21 +13,28 @@ const DAILY_WAGE_BY_CAT = {
   USW: 541,
 };
 
+const FILL = {
+  ATTENDANCE: { argb: "FFE8F2FF" }, // light blue
+  EARNINGS: { argb: "FFE9FBE7" },   // light green
+  DEDUCTIONS: { argb: "FFFFF1E6" }, // light orange
+  NET: { argb: "FFFFF9DB" },        // light yellow
+};
+
 const WAGE_HEADERS = [
   "Sl No",
   "Month",
   "Emp No",
   "Site",
   "Employee Name",
-  "Designation",
-  "Category",
-  "Manpower Type",
+  "Dsg",
+  "Cat",
+  "Manpwr Typ",
   "Gross",
   "V%",
-  "Daily Min Wages",
-  "Total Working Days",
-  "Present Days",
-  "Absent Days",
+  "Daily MinW",
+  "Total Days",
+  "Prsnt Days",
+  "Abs Days",
   // "Week off Days",
   "C Off Days",
   "Holidays",
@@ -39,15 +46,15 @@ const WAGE_HEADERS = [
   "Erng ADA",
   "Erng HRA",
   "Erng Conv",
-  "Erng Medical",
-  "Erng Sub Total",
-  "Erng On Basic",
-  "Erng On Duty",
-  "Erng Sub Total 2",
+  "Erng Med",
+  "Erng Sub Tot",
+  "Erng OnBasic",
+  "Erng OnDuty",
+  "Erng Sub Tot",
   "Erng Site DA",
-  "OT Hours",
-  "Erng OT Amount",
-  "Erng Other Pay",
+  "OT Hrs",
+  "Erng OT Amt",
+  "Erng Oth Pay",
   "Erng Arrear",
   "Erng Total",
 
@@ -63,6 +70,17 @@ const WAGE_HEADERS = [
 
   "Net Payable",
 ];
+
+function calculateDailyWage(Employee, paidDays, DAILY_WAGE_BY_CAT) {
+  // Rule 2: Fixed salary employee
+  if (Employee.salaryType === "FIXED") {
+    return Number(Employee.salary) || 0;
+  }
+
+  // Rule 3: Minimum Wage Based
+  const dailyRate = DAILY_WAGE_BY_CAT[Employee.category] || 0;
+  return dailyRate * paidDays;
+}
 
 // same 26–25 window you already use everywhere
 function buildMonthWindow(year, month) {
@@ -163,37 +181,76 @@ exports.exportSiteWageSheet = async (req, res, next) => {
     // 6) build workbook
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("Wage Sheet", {
-      views: [{ state: "frozen", ySplit: 1 }],
+      views: [{
+      state: "frozen",
+      ySplit: 1, // header row
+      xSplit: 9, // Sl No → Category
+    },],
     });
 
-    // header row
-    ws.addRow(WAGE_HEADERS);
-    const headerRow = ws.getRow(1);
-    headerRow.font = { bold: true, size: 10 };
-    headerRow.alignment = {
-      horizontal: "center",
-      vertical: "middle",
-      wrapText: true,
-    };
-    headerRow.height = 28;
-    headerRow.eachCell((cell) => {
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FFF3F4F6" },
-      };
-      cell.border = {
-        top: { style: "thin" },
-        left: { style: "thin" },
-        bottom: { style: "thin" },
-        right: { style: "thin" },
-      };
-    });
+ // ===== HEADER ROW (GADARWARA STYLE) =====
+ws.addRow(WAGE_HEADERS);
+const headerRow = ws.getRow(1);
+
+headerRow.font = {
+  bold: true,
+  size: 10,
+};
+
+headerRow.alignment = {
+  horizontal: "center",
+  vertical: "middle",
+  wrapText: true,
+};
+
+headerRow.height = 36;
+
+headerRow.eachCell({ includeEmpty: true }, (cell) => {
+  cell.fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "FFBDD7EE" },
+  };
+
+  cell.border = {
+    top: { style: "thin" },
+    bottom: { style: "thin" },
+    left: { style: "thin" },
+    right: { style: "thin" },
+  };
+});
+
+
+    // Color Earnings header
+for (let c = 19; c <= 33; c++) {
+  headerRow.getCell(c).fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: FILL.EARNINGS,
+  };
+}
+
+// Color Deductions header
+for (let c = 34; c <= 41; c++) {
+  headerRow.getCell(c).fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: FILL.DEDUCTIONS,
+  };
+}
+
+// Net Payable header
+headerRow.getCell(42).fill = {
+  type: "pattern",
+  pattern: "solid",
+  fgColor: FILL.NET,
+};
+
 
     // column widths (tweakable)
     const colWidths = [
-      6, 10, 8, 8, 26, 12, 10, 10, 10, 5, 10, 12, 8, 8, 8, 8, 8, 6, 6, 10, 8, 8,
-      8, 10, 10, 10, 10, 8, 6, 10, 10, 8, 10, 8, 8, 6, 8, 8, 8, 8, 8, 10,
+      6, 6, 6, 8, 24, 8, 8, 8, 8, 5, 8, 8, 8, 8, 8, 8, 8, 6, 8, 6, 8, 6,
+      8, 8, 8, 6, 8, 6, 6, 8, 8, 8, 8, 8, 6, 6, 8, 8, 8, 8, 8, 10,
     ];
     ws.columns = colWidths.map((w) => ({ width: w }));
 
@@ -202,6 +259,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 
     // Precompute site-level calendar counts
     const calendarDays = days.length;
+    const grandTotals = {};
 
     for (const emp of employees) {
       const cat = (emp.category || "").toUpperCase();
@@ -214,24 +272,38 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       // If AttendanceSummary provides employee totalHolidays, use it (preferred)
       const summary = summaryByEmp[emp.empNo] || {};
       const summaryHolidays = summary?.totalHolidays; // may be undefined
-      const holidaysCount =
-        typeof summaryHolidays !== "undefined" ? Number(summaryHolidays) : 0;
 
-      const presentDays = Number(summary.totalPresentDays || 0);
+      const presentDays =Number(summary?.totalPresentDays || 0) + Number(summary?.totalHolidayWorkingDays || 0);
       const weekOffDays = Number(summary.totalWeekOffs || 0);
       const coffDays = Number(summary.totalCOffs || summary.totalCOffDays || 0);
       const otHours = Number(summary.otHours || 0);
       const totalDaysForSite =
         Number(summary.totalDaysWorked) + Number(summary?.totalHolidays);
-      const paidDays = presentDays === 0 ? 0 : presentDays + coffDays + holidaysCount;
 
-      const gross = dailyWage * totalDaysForSite;
+      const holidaysCount =
+        presentDays >= totalDaysForSite ? 0: Number(summaryHolidays);
+      const paidDays =
+        presentDays === 0 ? 0 : presentDays + coffDays + holidaysCount;
+      const gross =
+        emp.salaryType === "FIXED" ? emp.salary : dailyWage * totalDaysForSite;
       const totalDays = totalDaysForSite;
-      const perDayGross = (gross / totalDays) * paidDays;
+      
+
       const erngOtAmt = (dailyWage / 4) * otHours;
       const erngBaDa = dailyWage * paidDays;
+      const perDayGross = totalDays > 0 ? (gross * paidDays) / totalDays : 0;
+      const balance = perDayGross - erngBaDa;
 
-      let erngOnBas = 0;
+      const erngHra = balance * 0.5;
+      const erngConv = balance * 0.35;
+      const erngMed = balance * 0.15;
+      const erngArrear = 0;
+      const erngOtherPay = 0;
+      const erngSiteDa = 0;
+      const erngAda = 0;
+      const erngSubTot1 = erngBaDa + erngHra + erngConv + erngMed + erngAda;
+
+       let erngOnBas = 0;
       let erngOnDuty = 0;
       let dednESI = 0;
 
@@ -262,14 +334,6 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         }
       }
 
-      const erngHra = (perDayGross - erngBaDa) * 0.5;
-      const erngConv = (perDayGross - erngBaDa) * 0.35;
-      const erngMed = (perDayGross - erngBaDa) * 0.15;
-      const erngArrear = 0;
-      const erngOtherPay = 0;
-      const erngSiteDa = 0;
-      const erngAda = 0;
-      const erngSubTot1 = erngBaDa + erngHra + erngConv + erngMed + erngAda;
       const erngSubTot2 = erngSubTot1 + erngOnBas + erngOnDuty;
       const erngTotal =
         erngArrear + erngOtherPay + erngOtAmt + erngSiteDa + erngSubTot2;
@@ -281,12 +345,16 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const dednTds = 0;
       const dednAdv = 0;
       const dednPtax = 0;
-      const dednOther = 0;
+      const dednOther =
+        emp.salaryType === "FIXED" && gross >= 30000
+          ? Number(erngOnBas + erngOnDuty)
+          : 0;
       const dednTotal =
         dednEPF + dednESI + dednLon + dednTds + dednAdv + dednPtax + dednOther;
+
       const netPayable = erngTotal - dednTotal;
 
-      let absDays = totalDays - paidDays;
+      const absDays = totalDays - paidDays;
 
       const rowValues = [
         sl, // Sl no
@@ -297,16 +365,16 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         emp.designation || "", // Dsg
         emp.category || "", // Cat
         emp.manpowerType || emp.siteType || "" || "", // Manpwr Typ
-        round2(gross), // Gross
+        gross, // Gross
         0, // v% (reserved)
-        round2(dailyWage), // Daily Minw
-        round2(totalDays), // Total days (site-level rule)
-        round2(presentDays), // Prsnt Days (PP + P + HW)
-        round2(absDays), // Abs days
+        dailyWage, // Daily Minw
+        totalDays, // Total days (site-level rule)
+        presentDays, // Prsnt Days (PP + P + HW)
+        absDays, // Abs days
         // round2(weekOffDays), // CL day (CC)
-        round2(coffDays), // Coff Days
-        round2(Number(holidaysCount || 0)), // Holidays (prefer AttendanceSummary.totalHolidays)
-        round2(paidDays), // Paid Days (present + CC + WW - HW)
+        coffDays, // Coff Days
+        Number(holidaysCount || 0), // Holidays (prefer AttendanceSummary.totalHolidays)
+        paidDays, // Paid Days (present + CC + WW - HW)
         0, // Site days (reserved)
         round2(erngBaDa), // Emg ba+da (reserved)
         0, // EmAda (reserved)
@@ -315,62 +383,155 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         round2(erngMed), // Emg Med (reserved)
         round2(erngSubTot1), // Emg Sub Tot (reserved)
         round2(erngOnBas), // Emg onBas (reserved)
-        round2(erngOnDuty),
+        erngOnDuty,
         round2(erngSubTot2), // Emg Sub Tot (reserved)
         0, // EMg SitDa (reserved)
-        round2(otHours), // OT hrs
+        otHours, // OT hrs
         round2(erngOtAmt), // Earng OTamt
         0, // Emg othPy (reserved)
         0, // Emg Arrear (reserved)
         round2(erngTotal), // Emg total (paidDays*dailyWage + ot)
         round2(dednEPF), // dedn EPF (12% on paid days*dailyWage)
-        Math.ceil(dednESI), // dedn ESI (2% on paid days*dailyWage)
+        roundUp(dednESI), // dedn ESI (2% on paid days*dailyWage)
         round2(dednLon), // Ded Lon
         round2(dednTds), // Ded TDS
         round2(dednAdv), // Ded Adv
         round2(dednPtax), // Ded ptax (not calculated)
         round2(dednOther), // Ded oth
-        Math.ceil(dednTotal), // Dedn total
-        Math.floor(netPayable), // Net payable
+        roundUp(dednTotal), // Dedn total
+        roundDown(netPayable), // Net payable
       ];
+      
+      rowValues.forEach((val, idx) => {
+  // columns starting from Gross (index 8, 0-based = 7)
+  if (idx >= 7 && typeof val === "number") {
+    grandTotals[idx] = (grandTotals[idx] || 0) + val;
+  }
+});
 
       const newRow = ws.addRow(rowValues);
+      applySectionBorders(newRow);
+      applySectionBorders(headerRow);
 
       // formatting for numeric cells
-      newRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        if (colNumber >= 1 && colNumber <= 44) {
-          cell.alignment = {
-            vertical: "middle",
-            horizontal: colNumber === 4 ? "left" : "center",
-          };
-        }
-        // const currencyCols = new Set([
-        //   8, 10, 30, 33, 34, 35, 36, 37, 41, 42, 44,
-        // ]);
-        // if (currencyCols.has(colNumber) && typeof cell.value === "number") {
-        //   cell.numFmt = "#,##0.00";
-        // }
-        cell.border = {
-          top: { style: "thin" },
-          bottom: { style: "thin" },
-          left: { style: "thin" },
-          right: { style: "thin" },
-        };
-      });
+     newRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+  // Alignment
+  cell.alignment = {
+    vertical: "middle",
+    horizontal: colNumber === 4 ? "left" : "center",
+  };
+
+   if ((colNumber === 29 || colNumber === 30) && Number(cell.value) > 0) {
+    cell.font = {
+      color: { argb: "FFFF0000" }, // red
+      bold: true,
+    };
+  }
+
+  // ---- BACKGROUND COLORS ----
+  if (colNumber >= 1 && colNumber <= 18) {
+    // Attendance & base info
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: FILL.ATTENDANCE,
+    };
+  }
+
+  if (colNumber >= 19 && colNumber <= 33) {
+    // Earnings
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: FILL.EARNINGS,
+    };
+  }
+
+  if (colNumber >= 34 && colNumber <= 41) {
+    // Deductions
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: FILL.DEDUCTIONS,
+    };
+  }
+
+  if (colNumber === 42) {
+    // Net Payable
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: FILL.NET,
+    };
+    cell.font = { bold: true };
+  }
+
+  // Borders
+  cell.border = {
+    top: { style: "thin" },
+    bottom: { style: "thin" },
+    left: { style: "thin" },
+    right: { style: "thin" },
+  };
+});
+
 
       // alternate row shading
-      if (sl % 2 === 0) {
-        newRow.eachCell((cell) => {
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FFF8FAFB" },
-          };
-        });
-      }
+      // if (sl % 2 === 0) {
+      //   newRow.eachCell((cell) => {
+      //     cell.fill = {
+      //       type: "pattern",
+      //       pattern: "solid",
+      //       fgColor: { argb: "FFF8FAFB" },
+      //     };
+      //   });
+      // }
 
       sl += 1;
+
     }
+
+    const totalRowValues = Array(WAGE_HEADERS.length).fill("");
+
+// Label
+totalRowValues[4] = "TOTAL – CURRENT MONTH";
+
+// Fill totals
+Object.keys(grandTotals).forEach((idx) => {
+  totalRowValues[idx] = round2(grandTotals[idx]);
+});
+
+const totalRow = ws.addRow(totalRowValues);
+
+totalRow.font = { bold: true };
+
+totalRow.eachCell((cell, colNumber) => {
+  cell.alignment = {
+    vertical: "middle",
+    horizontal: colNumber === 5 ? "left" : "center",
+  };
+
+  // Background (same header blue)
+  cell.fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "FFD9EAF7" }, // light blue
+  };
+
+  // Thick top border
+  cell.border = {
+    top: { style: "thick" },
+    bottom: { style: "thin" },
+    left: { style: "thin" },
+    right: { style: "thin" },
+  };
+
+  // Currency format
+  // if (typeof cell.value === "number") {
+  //   cell.numFmt = "#,##0.00";
+  // }
+});
+
 
     // stream workbook to response
     const fileName = `wage_sheet_${siteId}_${year}_${month}.xlsx`;
@@ -387,8 +548,30 @@ exports.exportSiteWageSheet = async (req, res, next) => {
   }
 };
 
+function applySectionBorders(row) {
+  const thickCols = [18, 33, 41];
+
+  thickCols.forEach((col) => {
+    const cell = row.getCell(col);
+    cell.border = {
+      ...cell.border,
+      right: { style: "thick" },
+    };
+  });
+}
+
 // small helper
 function round2(v) {
-  if (typeof v !== "number") v = Number(v) || 0;
+  if (v === null || v === undefined || isNaN(v)) return 0;
   return Math.round(v);
+}
+
+function roundUp(v) {
+  if (v === null || v === undefined || isNaN(v)) return 0;
+  return Math.ceil(v);
+}
+
+function roundDown(v) {
+  if (v === null || v === undefined || isNaN(v)) return 0;
+  return Math.floor(v);
 }

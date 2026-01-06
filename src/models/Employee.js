@@ -5,7 +5,16 @@ const employeeSchema = new mongoose.Schema({
   name: { type: String, required: true },
   designation: String,
   category: String, // HSW / SSW / USW etc.
-  salary: Number,
+  salaryType: {
+    type: String,
+    enum: ["MWB", "FIXED"], // Minimum Wage Based / Fixed
+    required: true,
+    default: "MWB",
+  },
+  salary: {
+    type: Number, // only used if salaryType === "FIXED"
+    default: 0,
+  },
   site: { type: String, required: true }, // "DADRI", "GADARWARA"
   siteType: {
     // "Supply" or "BOQ"
