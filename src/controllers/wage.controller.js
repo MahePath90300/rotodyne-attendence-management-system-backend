@@ -4,14 +4,7 @@ const Attendance = require("../models/Attendance");
 const Employee = require("../models/Employee");
 const Holiday = require("../models/Holiday");
 const AttendanceSummary = require("../models/AttendanceSummary");
-
-// ---- wage constants ----
-const DAILY_WAGE_BY_CAT = {
-  HSW: 893,
-  SW: 760,
-  SSW: 632,
-  USW: 541,
-};
+const { resolveWagePolicy } = require("../config/wagePolicy");
 
 const FILL = {
   ATTENDANCE: { argb: "FFE8F2FF" }, // light blue
@@ -123,6 +116,8 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         .status(403)
         .json({ message: "Only admin can export wage sheet" });
     }
+
+    const policy = resolveWagePolicy(siteId);
 
     const { start, end, days } = buildMonthWindow(year, month);
 
@@ -260,7 +255,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 
     for (const emp of employees) {
       const cat = (emp.category || "").toUpperCase();
-      const dailyWage = DAILY_WAGE_BY_CAT[cat] || 0;
+      const dailyWage = resolveDailyWage(emp, policy);
 
       // per-employee attendance + ot maps
       const empAtt = attByEmp[emp.empNo] || {};
@@ -272,7 +267,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 
       const presentDays =
         n(summary?.totalPresentDays || 0) +
-        n(summary?.totalHolidayWorkingDays || 0);
+        n(summary?.totalHoilidayWorkingDays || 0);
       const weekOffDays = Number(summary.totalWeekOffs || 0);
       const coffDays = n(summary.totalCOffs || summary.totalCOffDays || 0);
       const otHours = n(summary.otHours || 0);
@@ -287,7 +282,9 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         emp.salaryType === "FIXED" ? emp.salary : dailyWage * totalDaysForSite;
       const totalDays = totalDaysForSite;
 
-      const erngOtAmt = (dailyWage / 4) * otHours;
+      const otDivisor = policy.otRateDivisor || 4;
+      const erngOtAmt = (dailyWage / otDivisor) * otHours;
+
       const erngBaDa = dailyWage * paidDays;
       const perDayGross = totalDays > 0 ? (gross * paidDays) / totalDays : 0;
       const balance = perDayGross - erngBaDa;
@@ -296,7 +293,12 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const erngConv = balance * 0.35;
       const erngMed = balance * 0.15;
       const erngArrear = 0;
-      const erngOtherPay = 0;
+
+      const erngOtherPerDay =
+        typeof policy.erngOtherPayAmount === "object"
+          ? policy.erngOtherPayAmount[siteId] || 0
+          : policy.erngOtherPayAmount || 0;
+      const erngOtherPay = paidDays * erngOtherPerDay;
       const erngSiteDa = 0;
       const erngAda = 0;
 
@@ -304,32 +306,28 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       let erngOnDuty = 0;
       let dednESI = 0;
 
-      // =====================
-      // SITE BASED LOGIC
-      // =====================
-      if (siteId === "GADARWARA") {
-        // ❌ No ESI for Gadarwara
-        dednESI = 0;
+      // Earn on Basic
+      const onBasicPercent =
+        typeof policy.erngOnBasicPercent === "object"
+          ? policy.erngOnBasicPercent[siteId] || 0
+          : policy.erngOnBasicPercent || 0;
 
-        // ❌ No Earn on Duty
-        erngOnDuty = 0;
+      erngOnBas = erngBaDa * onBasicPercent;
 
-        // ✅ Earn on Basic = 8.33%
-        erngOnBas = erngBaDa * 0.0833;
-      } else if (siteId === "KANIHA") {
-        // ✅ Earn on Basic = 17.44%
-        erngOnBas = erngBaDa * 0.1744;
+      // Earn on Duty
+      const onDutyPerDay =
+        typeof policy.erngOnDutyPerDay === "object"
+          ? policy.erngOnDutyPerDay[siteId] || 0
+          : policy.erngOnDutyPerDay || 0;
 
-        // ✅ Earn on Duty
-        erngOnDuty = paidDays * 50;
+      erngOnDuty = paidDays * onDutyPerDay;
 
-        // ✅ ESI only if Gross < 21000
-        if (gross < 21000) {
-          dednESI = Math.min(erngBaDa * 0.0075, 1800);
-        } else {
-          dednESI = 0;
-        }
-      }
+      const esiPolicy =
+        typeof policy.esi === "object" && policy.esi[siteId]
+          ? policy.esi[siteId]
+          : policy.esi;
+
+      dednESI = resolveESI(erngBaDa, erngOnDuty, gross, esiPolicy);
 
       const erngBaDaR = round2(erngBaDa);
       const erngHraR = round2(erngHra);
@@ -338,14 +336,19 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const erngOnBasR = round2(erngOnBas);
       const erngOnDutyR = round2(erngOnDuty);
       const erngOtAmtR = round2(erngOtAmt);
+      const erngOtherPayR = round2(erngOtherPay);
 
       const erngSubTot1 = erngBaDaR + erngHraR + erngConvR + erngMedR + erngAda;
 
       const erngSubTot2 = erngSubTot1 + erngOnBasR + erngOnDutyR;
       const erngTotal =
-        erngArrear + erngOtherPay + erngOtAmtR + erngSiteDa + erngSubTot2;
+        erngArrear + erngOtherPayR + erngOtAmtR + erngSiteDa + erngSubTot2;
 
-      const dednEPF = Math.min(erngBaDa * 0.12, 1800);
+      const pfBase = resolveContributionBase(erngBaDa, erngOnDuty, policy.pf);
+
+      const dednEPF = policy.pf?.enabled
+        ? Math.min(pfBase * policy.pf.percent, policy.pf.maxAmount || Infinity)
+        : 0;
 
       const paidDaysWage = Math.max(0, paidDays) * dailyWage;
       const dednLon = 0;
@@ -353,7 +356,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const dednAdv = 0;
       const dednPtax = 0;
       const dednOther =
-        emp.salaryType === "FIXED" && gross >= 30000
+        policy.dednOtherEnabled && gross >= 30000 && gross < erngTotal
           ? n(erngOnBas + erngOnDuty)
           : 0;
 
@@ -370,7 +373,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         dednPtax +
         dednOtherR;
 
-      const netPayable = Math.trunc(erngTotal - dednTotal);
+      const netPayable = Math.floor(erngTotal - dednTotal);
 
       const absDays = totalDays - paidDays;
 
@@ -406,7 +409,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         0, // EMg SitDa (reserved)
         otHours, // OT hrs
         round2(erngOtAmtR), // Earng OTamt
-        0, // Emg othPy (reserved)
+        round2(erngOtherPayR), // Emg othPy (reserved)
         0, // Emg Arrear (reserved)
         round2(erngTotal), // Emg total (paidDays*dailyWage + ot)
         round2(dednEPFR), // dedn EPF (12% on paid days*dailyWage)
@@ -589,4 +592,40 @@ function roundUp(v) {
 function roundDown(v) {
   if (v === null || v === undefined || isNaN(v)) return 0;
   return Math.floor(v);
+}
+
+function resolveDailyWage(emp, policy) {
+  // ✅ NALCO / custom sites
+  if (Number(emp.dailyWageRate) > 0) {
+    return Number(emp.dailyWageRate);
+  }
+
+  // ✅ NTPC / IOCL
+  return policy.dailyWageByCategory?.[emp.category] || 0;
+}
+
+function resolveESI(erngBaDa, erngOnDuty, gross, esiPolicy) {
+  if (!esiPolicy?.enabled) return 0;
+
+  if (esiPolicy.applyCeiling !== false) {
+    if (esiPolicy.ceiling && gross >= esiPolicy.ceiling) {
+      return 0;
+    }
+  }
+
+  const base = resolveContributionBase(erngBaDa, erngOnDuty, esiPolicy);
+
+  let amt = base * esiPolicy.percent;
+
+  if (esiPolicy.maxAmount) {
+    amt = Math.min(amt, esiPolicy.maxAmount);
+  }
+
+  return amt;
+}
+
+function resolveContributionBase(erngBaDa, erngOnDuty, policySection) {
+  if (!policySection?.enabled) return 0;
+
+  return policySection.includeOnDuty ? erngBaDa + erngOnDuty : erngBaDa;
 }

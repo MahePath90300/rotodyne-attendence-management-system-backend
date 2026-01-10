@@ -4,24 +4,26 @@ const Holiday = require("../models/Holiday");
 const Attendance = require("../models/Attendance");
 const User = require("../models/User");
 const AttendanceSummary = require("../models/AttendanceSummary"); // NEW
+const { resolveAttendanceCycle } = require("../config/attendanceCycle.js");
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function buildMonthWindow(year, month) {
-  const prevMonth = month === 1 ? 12 : month - 1;
-  const prevYear = month === 1 ? year - 1 : year;
-  const start = new Date(prevYear, prevMonth - 1, 26);
-  const end = new Date(year, month - 1, 25);
+function buildMonthWindow(year, month, siteId) {
+  const cycle = resolveAttendanceCycle(siteId);
+  const { start, end } = cycle.buildRange(year, month);
+
   const days = [];
   for (let d = start; d <= end; d = addDays(d, 1)) {
-    days.push(format(d, "yyyy-MM-dd")); // local date, matches DB
+    days.push(format(d, "yyyy-MM-dd"));
   }
+
   return {
     start: format(start, "yyyy-MM-dd"),
     end: format(end, "yyyy-MM-dd"),
     days,
+    cycleType: cycle.type,
   };
 }
 
@@ -31,7 +33,7 @@ exports.getSiteAttendance = async (req, res, next) => {
     const year = Number(req.query.year);
     const month = Number(req.query.month);
 
-    const { start, end, days } = buildMonthWindow(year, month);
+    const { start, end, days } = buildMonthWindow(year, month, siteId);
 
     const employees = await Employee.find({ site: siteId })
       .sort({ empNo: 1 })
@@ -68,7 +70,7 @@ exports.getSiteAttendance = async (req, res, next) => {
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
 
     res.json({
-      siteTitle: `NTPC ${siteId}`,
+      siteTitle: siteId,
       siteType,
       employees,
       attendanceMap,

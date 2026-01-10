@@ -22,6 +22,10 @@ const employeeSchema = new mongoose.Schema({
     enum: ["supply", "BOQ"],
     required: true,
   },
+  dailyWageRate: {
+  type: Number,
+  default: null, // null means "use policy/category"
+},
 });
 
 employeeSchema.index({ site: 1, empNo: 1 }, { unique: true });
