@@ -9,6 +9,8 @@ async function connectDB() {
   try {
     await mongoose.connect(MONGO_URI, {
       dbName: process.env.MONGO_DBNAME || undefined,
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
     });
     console.log("✓ MongoDB connected");
   } catch (err) {
