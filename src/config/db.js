@@ -1,21 +1,23 @@
 const mongoose = require("mongoose");
-const { MONGO_URI } = require("./env");
 
 async function connectDB() {
-  if (!MONGO_URI) {
-    console.warn("MONGO_URI not set - skipping DB connect (dev mode?)");
+  const uri = process.env.MONGO_URI;
+
+  if (!uri) {
+    console.error("❌ MONGO_URI not defined");
     return;
   }
+
   try {
-    await mongoose.connect(MONGO_URI, {
-      dbName: process.env.MONGO_DBNAME || undefined,
+    await mongoose.connect(uri, {
+      dbName: process.env.MONGO_DBNAME,
       serverSelectionTimeoutMS: 10000,
-      socketTimeoutMS: 45000,
     });
-    console.log("✓ MongoDB connected");
+
+    console.log("✅ MongoDB connected");
   } catch (err) {
-    console.error("MongoDB connection error:", err);
-    process.exit(1);
+    console.error("❌ MongoDB connection failed:", err.message);
   }
 }
+
 module.exports = connectDB;
