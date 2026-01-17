@@ -158,7 +158,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 
     // 4) Sundays in that window
     const sundaySet = new Set(
-      days.filter((iso) => new Date(iso).getDay() === 0)
+      days.filter((iso) => new Date(iso).getDay() === 0),
     );
 
     // 5) Load AttendanceSummary entries for this site / month (to read per-employee totalHolidays)
@@ -261,6 +261,19 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const empAtt = attByEmp[emp.empNo] || {};
       const empOtMap = otByEmp[emp.empNo] || {};
 
+      // ===== FIXED SALARY FLAGS (SAFE DEFAULTS) =====
+      const isFixed = emp.salaryType === "FIXED";
+
+      const grossIncludesDeductions =
+        isFixed && typeof emp.grossIncludesDeductions === "boolean"
+          ? emp.grossIncludesDeductions
+          : false;
+
+      const esiApplicable = !isFixed || emp.esiApplicable !== false;
+
+      const otherDednApplicable =
+        !isFixed || emp.otherDeductionsApplicable !== false;
+
       // If AttendanceSummary provides employee totalHolidays, use it (preferred)
       const summary = summaryByEmp[emp.empNo] || {};
       const summaryHolidays = summary?.totalHolidays; // may be undefined
@@ -275,7 +288,9 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         n(summary.totalDaysWorked) + n(summary?.totalHolidays);
 
       const holidaysCount =
-        presentDays >= totalDaysForSite ? 0 : n(summaryHolidays);
+        presentDays >= totalDaysForSite && emp.empNo !== 14227
+          ? 0
+          : n(summaryHolidays);
       const paidDays =
         presentDays === 0 ? 0 : presentDays + coffDays + holidaysCount;
       const gross =
@@ -327,7 +342,13 @@ exports.exportSiteWageSheet = async (req, res, next) => {
           ? policy.esi[siteId]
           : policy.esi;
 
-      dednESI = resolveESI(erngBaDa, erngOnDuty, gross, esiPolicy);
+      dednESI = resolveESI(
+        erngBaDa,
+        erngOnDuty,
+        gross,
+        esiPolicy,
+        emp?.esiApplicable,
+      );
 
       const erngBaDaR = round2(erngBaDa);
       const erngHraR = round2(erngHra);
@@ -355,9 +376,20 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const dednTds = 0;
       const dednAdv = 0;
       const dednPtax = 0;
+
+      const hasFixedOtherDedn =
+        typeof emp?.otherDeductionAmount === "number" &&
+        emp.otherDeductionAmount > 0;
+
       const dednOther =
-        policy.dednOtherEnabled && gross >= 30000 && gross < erngTotal
-          ? n(erngOnBas + erngOnDuty)
+        emp?.grossIncludesDeductions !== true &&
+        otherDednApplicable &&
+        policy.dednOtherEnabled
+          ? hasFixedOtherDedn
+            ? n(emp.otherDeductionAmount) // ✅ client override (MWB + FIXED)
+            : isFixed
+              ? n(erngOnBas + erngOnDuty) // ✅ FIXED fallback
+              : 0
           : 0;
 
       const dednEPFR = round2(dednEPF);
@@ -373,7 +405,13 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         dednPtax +
         dednOtherR;
 
-      const netPayable = Math.floor(erngTotal - dednTotal);
+      let netPayable = 0;
+
+      if (isFixed && grossIncludesDeductions) {
+        netPayable = Math.floor(gross - (dednEPFR + dednESIR));
+      } else {
+        netPayable = Math.floor(erngTotal - dednTotal);
+      }
 
       const absDays = totalDays - paidDays;
 
@@ -555,7 +593,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
     const fileName = `wage_sheet_${siteId}_${year}_${month}.xlsx`;
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
 
@@ -604,16 +642,22 @@ function resolveDailyWage(emp, policy) {
   return policy.dailyWageByCategory?.[emp.category] || 0;
 }
 
-function resolveESI(erngBaDa, erngOnDuty, gross, esiPolicy) {
+function resolveESI(erngBaDa, erngOnDuty, gross, esiPolicy, esiApplicable) {
   if (!esiPolicy?.enabled) return 0;
 
-  if (esiPolicy.applyCeiling !== false) {
+  // 🔹 Deduction base is ALWAYS earned wages
+  const base = resolveContributionBase(erngBaDa, erngOnDuty, esiPolicy);
+  if (base <= 0) return 0;
+
+  // 🔹 Ceiling blocks ONLY when esiApplicable is NOT explicitly true
+  if (esiPolicy.applyCeiling !== false && esiApplicable !== true) {
     if (esiPolicy.ceiling && gross >= esiPolicy.ceiling) {
       return 0;
     }
   }
 
-  const base = resolveContributionBase(erngBaDa, erngOnDuty, esiPolicy);
+  // 🔹 If esiApplicable === false → never deduct
+  if (esiApplicable === false) return 0;
 
   let amt = base * esiPolicy.percent;
 
