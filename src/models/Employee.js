@@ -26,6 +26,22 @@ const employeeSchema = new mongoose.Schema({
   type: Number,
   default: null, // null means "use policy/category"
 },
+grossIncludesDeductions:{
+  type:Boolean,
+  default:null
+},
+esiApplicable:{
+  type:Boolean,
+  default:true
+},
+otherDeductionsApplicable:{
+  type:Boolean,
+  default:true
+},
+otherDeductionAmount:{
+  type:Number,
+  default:null
+}
 });
 
 employeeSchema.index({ site: 1, empNo: 1 }, { unique: true });
