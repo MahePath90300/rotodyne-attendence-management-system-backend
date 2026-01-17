@@ -26,6 +26,9 @@ async function connectDB() {
 
   cached.conn = await cached.promise;
   console.log("✅ MongoDB connected");
+  console.log("🧪 MONGO_URI exists:", !!process.env.MONGO_URI);
+  console.log("🧪 DB NAME:", process.env.MONGO_DBNAME);
+
   return cached.conn;
 }
 

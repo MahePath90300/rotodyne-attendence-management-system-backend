@@ -41,6 +41,18 @@ app.use(
 );
 app.use(helmet());
 
+const connectDB = require("./config/db");
+
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    console.error("❌ DB middleware error:", err);
+    res.status(500).json({ message: "Database not ready" });
+  }
+});
+
 app.use("/", indexRouter);
 app.use("/users", usersRouter);
 app.use("/api/v1/auth", authRoutes);
