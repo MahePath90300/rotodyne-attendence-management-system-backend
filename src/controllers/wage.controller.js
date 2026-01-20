@@ -1,5 +1,5 @@
 const ExcelJS = require("exceljs");
-const { addDays, format } = require("date-fns");
+const { addDays, format, min } = require("date-fns");
 const Attendance = require("../models/Attendance");
 const Employee = require("../models/Employee");
 const Holiday = require("../models/Holiday");
@@ -377,20 +377,17 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const dednAdv = 0;
       const dednPtax = 0;
 
-      const hasFixedOtherDedn =
-        typeof emp?.otherDeductionAmount === "number" &&
-        emp.otherDeductionAmount > 0;
-
-      const dednOther =
-        emp?.grossIncludesDeductions !== true &&
-        otherDednApplicable &&
-        policy.dednOtherEnabled
-          ? hasFixedOtherDedn
-            ? n(emp.otherDeductionAmount) // ✅ client override (MWB + FIXED)
-            : isFixed
-              ? n(erngOnBas + erngOnDuty) // ✅ FIXED fallback
-              : 0
-          : 0;
+      const dednOther = resolveOtherDeduction({
+        emp,
+        siteId,
+        salaryType: emp.salaryType,
+        policy,
+        erngTotal,
+        erngOnBas,
+        erngOnDuty,
+        paidDays,
+        otHours,
+      });
 
       const dednEPFR = round2(dednEPF);
       const dednESIR = roundUp(dednESI);
@@ -640,6 +637,70 @@ function resolveDailyWage(emp, policy) {
 
   // ✅ NTPC / IOCL
   return policy.dailyWageByCategory?.[emp.category] || 0;
+}
+
+function resolveOtherDeduction({
+  emp,
+  siteId,
+  salaryType,
+  policy,
+  erngTotal,
+  erngOnBas,
+  erngOnDuty,
+  paidDays,
+  otHours,
+}) {
+  const isFixed = salaryType === "FIXED";
+
+  const otherDednApplicable =
+    !isFixed || emp.otherDeductionsApplicable !== false;
+
+  if (!policy.dednOtherEnabled || !otherDednApplicable) {
+    return 0;
+  }
+
+  // ======================================
+  // 🔴 KANIHA TEMP MWB EMPLOYEES
+  // ======================================
+  const isKanihaTempMWB =
+    siteId === "KANIHA" &&
+    salaryType === "MWB" &&
+    emp.isTemporary === true &&
+    Number(emp.tempMinWage) > 0;
+
+  if (isKanihaTempMWB) {
+    const minWage = Number(emp.tempMinWage);
+
+    const clientTotalPay = minWage * paidDays + (minWage / 4) * otHours;
+
+    const diff = erngTotal - clientTotalPay;
+
+    return diff > 0 ? Math.round(diff) : 0;
+  }
+
+  const hasSitePayAmount =
+    siteId === "KANIHA" && isFixed && Number(emp.sitePayAmount) > 0;
+
+  if (hasSitePayAmount) {
+    const clientTotalPay = Number(emp.sitePayAmount);
+
+    const diff = erngTotal - clientTotalPay;
+
+    return diff > 0 ? Math.round(diff) : 0;
+  }
+
+  if (
+    typeof emp.otherDeductionAmount === "number" &&
+    emp.otherDeductionAmount > 0
+  ) {
+    return Math.round(emp.otherDeductionAmount);
+  }
+
+  if (isFixed && emp?.grossIncludesDeductions !== true) {
+    return Math.round(erngOnBas + erngOnDuty);
+  }
+
+  return 0;
 }
 
 function resolveESI(erngBaDa, erngOnDuty, gross, esiPolicy, esiApplicable) {
