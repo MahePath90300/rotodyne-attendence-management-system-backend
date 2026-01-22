@@ -73,6 +73,34 @@ export const WAGE_POLICIES = {
           includeOnDuty: false,
         },
       },
+      NABINAGAR: {
+        dailyWageByCategory: {
+          HSW: 893,
+          SW: 760,
+          SSW: 632,
+          USW: 541,
+        },
+        erngOnBasicPercent: 0.1813,
+        erngOnDutyPerDay: 0,
+        otRateDivisor: 8,
+        dednOtherEnabled: false,
+        erngOtherPayAmount: 0,
+        shouldErngOnDutyAdded: false,
+
+        pf: {
+          enabled: true,
+          percent: 0.12,
+          maxAmount: 1800,
+          includeOnDuty: false,
+        },
+        esi: {
+          enabled: true,
+          percent: 0.0075,
+          applyCeiling: false,
+          maxAmount: 1800,
+          includeOnDuty: false,
+        },
+      },
     },
   },
 
