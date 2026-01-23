@@ -13,6 +13,16 @@ const FILL = {
   NET: { argb: "FFFFF9DB" }, // light yellow
 };
 
+// Columns whose values should appear in BLUE
+const BLUE_VALUE_COLUMNS = new Set([
+  9, // Gross
+  19, // Erng BA+DA
+  24, // Erng Sub Tot (1)
+  27, // Erng Sub Tot (2)
+  33, // Erng Total
+  42, // Net Payable
+]);
+
 function n(v) {
   return Number(v) || 0;
 }
@@ -477,7 +487,15 @@ exports.exportSiteWageSheet = async (req, res, next) => {
           horizontal: colNumber === 4 ? "left" : "center",
         };
 
-        if ((colNumber === 29 || colNumber === 30) && Number(cell.value) > 0) {
+        // 🔵 BLUE IMPORTANT VALUES
+        if (BLUE_VALUE_COLUMNS.has(colNumber)) {
+          cell.font = {
+            color: { argb: "FF1F4ED8" }, // Excel blue
+            bold: true,
+          };
+        }
+
+        if ((colNumber === 29 || colNumber === 30)) {
           cell.font = {
             color: { argb: "FFFF0000" }, // red
             bold: true,
@@ -519,7 +537,10 @@ exports.exportSiteWageSheet = async (req, res, next) => {
             pattern: "solid",
             fgColor: FILL.NET,
           };
-          cell.font = { bold: true };
+          cell.font = {
+            ...(cell.font || {}),
+            bold: true,
+          };
         }
 
         // Borders
