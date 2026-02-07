@@ -17,12 +17,23 @@ const SITE_CONFIG = {
   HALDIA9426: { cycle: "CALENDAR" },
   IOCPANIPAT: { cycle: "CALENDAR" },
   NABINAGAR: { cycle: "CALENDAR" },
+  WANAKBORI: { cycle: "CALENDAR" },
+  IEPL9308: { cycle: "CALENDAR" },
+  IEPLOPER: { cycle: "CALENDAR" },
+  MECONNMDC: { cycle: "CALENDAR" },
+  RCFTHAL9253: { cycle: "CALENDAR" },
+
+  // ✅ JPL sites (NEW)
+  "JPLSBOP 9541": { cycle: "21_20" },
+  JPLSTG9540: { cycle: "21_20" },
 };
 
 function getSiteConfig(siteId) {
-  return SITE_CONFIG[String(siteId).toUpperCase()] || {
-    cycle: "26_25", // safe default
-  };
+  return (
+    SITE_CONFIG[String(siteId).toUpperCase()] || {
+      cycle: "26_25", // safe default
+    }
+  );
 }
 
 module.exports = { getSiteConfig };

@@ -1,10 +1,14 @@
 const ExcelJS = require("exceljs");
+const fs = require("fs");
+const path = require("path");
 const { addDays, format, min } = require("date-fns");
 const Attendance = require("../models/Attendance");
 const Employee = require("../models/Employee");
 const Holiday = require("../models/Holiday");
 const AttendanceSummary = require("../models/AttendanceSummary");
 const { resolveWagePolicy } = require("../config/wagePolicy");
+const { resolveAttendanceCycle } = require("../config/attendanceCycle");
+const { header } = require("express-validator");
 
 const FILL = {
   ATTENDANCE: { argb: "FFE8F2FF" }, // light blue
@@ -22,6 +26,12 @@ const BLUE_VALUE_COLUMNS = new Set([
   33, // Erng Total
   42, // Net Payable
 ]);
+
+const DESIGNATION_KEY_MAP = {
+  BTECH: "BTech",
+  GRADUATE: "Graduate",
+  DIPLOMA: "Diploma",
+};
 
 function n(v) {
   return Number(v) || 0;
@@ -89,23 +99,6 @@ function calculateDailyWage(Employee, paidDays, DAILY_WAGE_BY_CAT) {
   return dailyRate * paidDays;
 }
 
-// same 26–25 window you already use everywhere
-function buildMonthWindow(year, month) {
-  const prevMonth = month === 1 ? 12 : month - 1;
-  const prevYear = month === 1 ? year - 1 : year;
-  const startDate = new Date(prevYear, prevMonth - 1, 26);
-  const endDate = new Date(year, month - 1, 25);
-  const days = [];
-  for (let d = startDate; d <= endDate; d = addDays(d, 1)) {
-    days.push(format(d, "yyyy-MM-dd"));
-  }
-  return {
-    start: format(startDate, "yyyy-MM-dd"),
-    end: format(endDate, "yyyy-MM-dd"),
-    days,
-  };
-}
-
 /**
  * GET /api/v1/wage/site/:siteId/export?year=YYYY&month=MM
  * Only ADMIN is allowed to export.
@@ -127,9 +120,15 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         .json({ message: "Only admin can export wage sheet" });
     }
 
-    const policy = resolveWagePolicy(siteId);
+    const policy = await resolveWagePolicy(siteId);
 
-    const { start, end, days } = buildMonthWindow(year, month);
+    const cycle = resolveAttendanceCycle(siteId);
+    const { start, end } = cycle.buildRange(year, month);
+
+    const days = [];
+    for (let d = new Date(start); d <= end; d = addDays(d, 1)) {
+      days.push(format(d, "yyyy-MM-dd"));
+    }
 
     // 1) employees of this site sorted by name
     const employees = await Employee.find({ site: siteId })
@@ -141,9 +140,12 @@ exports.exportSiteWageSheet = async (req, res, next) => {
     }
 
     // 2) attendance in that window (status + otHours)
+    const startStr = format(new Date(start), "yyyy-MM-dd");
+    const endStr = format(new Date(end), "yyyy-MM-dd");
+
     const attDocs = await Attendance.find({
       siteId,
-      date: { $gte: start, $lte: end },
+      date: { $gte: startStr, $lte: endStr },
     }).lean();
 
     // Build maps: statuses and ot
@@ -151,20 +153,30 @@ exports.exportSiteWageSheet = async (req, res, next) => {
     const otByEmp = {}; // { empNo: { iso: otHours } }
 
     for (const doc of attDocs) {
+      const isoDate = format(new Date(doc.date), "yyyy-MM-dd");
+
       if (!attByEmp[doc.empNo]) attByEmp[doc.empNo] = {};
       if (!otByEmp[doc.empNo]) otByEmp[doc.empNo] = {};
-      if (doc.status) attByEmp[doc.empNo][doc.date] = doc.status;
-      if (typeof doc.otHours !== "undefined" && doc.otHours !== null) {
-        otByEmp[doc.empNo][doc.date] = Number(doc.otHours) || 0;
+
+      if (doc.status) {
+        attByEmp[doc.empNo][isoDate] = doc.status;
+      }
+
+      if (doc.otHours !== undefined && doc.otHours !== null) {
+        otByEmp[doc.empNo][isoDate] = Number(doc.otHours) || 0;
       }
     }
 
     // 3) holidays for this site (use holiday collection 'site' field) -> public holidays
     const holidayDocs = await Holiday.find({
       site: siteId,
-      date: { $gte: start, $lte: end },
+      date: { $gte: startStr, $lte: endStr },
     }).lean();
-    const holidaySet = new Set(holidayDocs.map((h) => h.date)); // site-level public holidays
+
+    const holidaySet = new Set(
+      holidayDocs.map((h) => format(new Date(h.date), "yyyy-MM-dd")),
+    );
+    // site-level public holidays
 
     // 4) Sundays in that window
     const sundaySet = new Set(
@@ -193,15 +205,19 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       views: [
         {
           state: "frozen",
-          ySplit: 1, // header row
+          ySplit: 2, // header row
           xSplit: 9, // Sl No → Category
         },
       ],
     });
 
     // ===== HEADER ROW (GADARWARA STYLE) =====
+    const cycleLabel = cycle.label(year, month);
+    ws.getCell("A1").value =
+      ` (RES)   SALARY CALCULATION SHEET: ${policy.group} ${siteId} (${cycleLabel})`;
     ws.addRow(WAGE_HEADERS);
-    const headerRow = ws.getRow(1);
+
+    const headerRow = ws.getRow(2);
 
     headerRow.font = {
       bold: true,
@@ -279,36 +295,39 @@ exports.exportSiteWageSheet = async (req, res, next) => {
           ? emp.grossIncludesDeductions
           : false;
 
-      const esiApplicable = !isFixed || emp.esiApplicable !== false;
-
-      const otherDednApplicable =
-        !isFixed || emp.otherDeductionsApplicable !== false;
-
       // If AttendanceSummary provides employee totalHolidays, use it (preferred)
       const summary = summaryByEmp[emp.empNo] || {};
-      const summaryHolidays = summary?.totalHolidays; // may be undefined
 
-      const presentDays =
-        n(summary?.totalPresentDays || 0) +
-        n(summary?.totalHoilidayWorkingDays || 0);
+      const presentDays = n(summary?.totalPresentDays || 0);
       const weekOffDays = Number(summary.totalWeekOffs || 0);
       const coffDays = n(summary.totalCOffs || summary.totalCOffDays || 0);
       const otHours = n(summary.otHours || 0);
-      const totalDaysForSite =
-        n(summary.totalDaysWorked) + n(summary?.totalHolidays);
+      const totalDaysForSite = days.length - sundaySet.size;
 
-      const holidaysCount =
-        presentDays >= totalDaysForSite && emp.empNo !== 14227
-          ? 0
-          : n(summaryHolidays);
+      const empHolidayDays = calculateEmployeeHolidayDays({
+        days,
+        holidaySet,
+        sundaySet,
+        empAtt,
+        presentDays,
+      });
+
+      const siteDays = n(summary?.siteDays);
+
       const paidDays =
-        presentDays === 0 ? 0 : presentDays + coffDays + holidaysCount;
+        presentDays === 0 ? 0 : presentDays + coffDays + empHolidayDays;
+
       const gross =
         emp.salaryType === "FIXED" ? emp.salary : dailyWage * totalDaysForSite;
       const totalDays = totalDaysForSite;
 
-      const otDivisor = policy.otRateDivisor || 4;
-      const erngOtAmt = (dailyWage / otDivisor) * otHours;
+      const erngOtAmt = resolveOTAmount({
+        siteId,
+        emp,
+        policy,
+        otHours,
+        dailyWage,
+      });
 
       const erngBaDa = dailyWage * paidDays;
       const perDayGross = totalDays > 0 ? (gross * paidDays) / totalDays : 0;
@@ -324,7 +343,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
           ? policy.erngOtherPayAmount[siteId] || 0
           : policy.erngOtherPayAmount || 0;
       const erngOtherPay = paidDays * erngOtherPerDay;
-      const erngSiteDa = 0;
+      const erngSiteDa = n(emp?.siteDa);
       const erngAda = 0;
 
       let erngOnBas = 0;
@@ -347,19 +366,6 @@ exports.exportSiteWageSheet = async (req, res, next) => {
 
       erngOnDuty = paidDays * onDutyPerDay;
 
-      const esiPolicy =
-        typeof policy.esi === "object" && policy.esi[siteId]
-          ? policy.esi[siteId]
-          : policy.esi;
-
-      dednESI = resolveESI(
-        erngBaDa,
-        erngOnDuty,
-        gross,
-        esiPolicy,
-        emp?.esiApplicable,
-      );
-
       const erngBaDaR = round2(erngBaDa);
       const erngHraR = round2(erngHra);
       const erngConvR = round2(erngConv);
@@ -375,11 +381,29 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       const erngTotal =
         erngArrear + erngOtherPayR + erngOtAmtR + erngSiteDa + erngSubTot2;
 
+      const esiPolicy =
+        typeof policy.esi === "object" && policy.esi[siteId]
+          ? policy.esi[siteId]
+          : policy.esi;
+
+      dednESI = resolveESI(
+        erngBaDa,
+        erngOnDuty,
+        gross,
+        esiPolicy,
+        emp?.esiApplicable,
+        erngTotal,
+      );
+
       const pfBase = resolveContributionBase(erngBaDa, erngOnDuty, policy.pf);
 
-      const dednEPF = policy.pf?.enabled
-        ? Math.min(pfBase * policy.pf.percent, policy.pf.maxAmount || Infinity)
-        : 0;
+      const dednEPF =
+        policy.pf?.enabled && emp?.pfApplicable !== false
+          ? Math.min(
+              pfBase * policy.pf.percent,
+              policy.pf.maxAmount || Infinity,
+            )
+          : 0;
 
       const paidDaysWage = Math.max(0, paidDays) * dailyWage;
       const dednLon = 0;
@@ -397,6 +421,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         erngOnDuty,
         paidDays,
         otHours,
+        erngOtAmt,
       });
 
       const dednEPFR = round2(dednEPF);
@@ -431,7 +456,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         emp.designation || "", // Dsg
         emp.category || "", // Cat
         emp.manpowerType || emp.siteType || "" || "", // Manpwr Typ
-        gross, // Gross
+        round2(gross), // Gross
         0, // v% (reserved)
         dailyWage, // Daily Minw
         totalDays, // Total days (site-level rule)
@@ -439,9 +464,9 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         absDays, // Abs days
         // round2(weekOffDays), // CL day (CC)
         coffDays, // Coff Days
-        n(holidaysCount || 0), // Holidays (prefer AttendanceSummary.totalHolidays)
+        empHolidayDays || 0, // Holidays (prefer AttendanceSummary.totalHolidays)
         paidDays, // Paid Days (present + CC + WW - HW)
-        0, // Site days (reserved)
+        siteDays, // Site days (reserved)
         round2(erngBaDaR), // Emg ba+da (reserved)
         0, // EmAda (reserved)
         round2(erngHraR), // Emg HRA (reserved)
@@ -451,7 +476,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         round2(erngOnBasR), // Emg onBas (reserved)
         erngOnDuty,
         round2(erngSubTot2), // Emg Sub Tot (reserved)
-        0, // EMg SitDa (reserved)
+        erngSiteDa, // EMg SitDa (reserved)
         otHours, // OT hrs
         round2(erngOtAmtR), // Earng OTamt
         round2(erngOtherPayR), // Emg othPy (reserved)
@@ -495,7 +520,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
           };
         }
 
-        if ((colNumber === 29 || colNumber === 30)) {
+        if (colNumber === 29 || colNumber === 30) {
           cell.font = {
             color: { argb: "FFFF0000" }, // red
             bold: true,
@@ -608,7 +633,7 @@ exports.exportSiteWageSheet = async (req, res, next) => {
     });
 
     // stream workbook to response
-    const fileName = `wage_sheet_${siteId}_${year}_${month}.xlsx`;
+    const fileName = `wage_sheet_${policy.group}${siteId}_${year}_${month}.xlsx`;
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -621,6 +646,579 @@ exports.exportSiteWageSheet = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.exportESIChallan = async (req, res, next) => {
+  try {
+    const { siteId } = req.params;
+    const year = Number(req.query.year);
+    const month = Number(req.query.month);
+
+    // ---------- VALIDATION ----------
+    if (!siteId || !year || !month) {
+      return res.status(400).json({ message: "siteId, year, month required" });
+    }
+
+    const role = (req.user?.role || "").toUpperCase();
+    if (role !== "ADMIN") {
+      return res.status(403).json({ message: "Only admin can export ESI" });
+    }
+
+    // ---------- LOAD POLICY & CYCLE ----------
+    const policy = await resolveWagePolicy(siteId);
+
+    if (!policy.esi?.enabled) {
+      return res
+        .status(403)
+        .json({ message: "ESI is not applicable for this site" });
+    }
+    const cycle = resolveAttendanceCycle(siteId);
+    const { start, end } = cycle.buildRange(Number(year), Number(month));
+
+    const daysInCycle = [];
+    for (let d = new Date(start); d <= end; d = addDays(d, 1)) {
+      daysInCycle.push(format(d, "yyyy-MM-dd"));
+    }
+
+    const sundaySet = new Set(
+      daysInCycle.filter((iso) => new Date(iso).getDay() === 0),
+    );
+
+    const totalDaysForSite = daysInCycle.length - sundaySet.size;
+
+    // ---------- LOAD EMPLOYEES ----------
+    const allEmployees = await Employee.find({ site: siteId })
+      .sort({ name: 1 })
+      .lean();
+
+    const employees = allEmployees.filter((emp) => emp.salaryType === "MWB");
+
+    if (!employees.length) {
+      return res
+        .status(404)
+        .json({ message: "No employees found for this site" });
+    }
+
+    // ---------- LOAD ATTENDANCE SUMMARY ----------
+    const summaries = await AttendanceSummary.find({
+      siteId,
+      year: Number(year),
+      month: Number(month),
+    }).lean();
+
+    const summaryByEmp = {};
+    summaries.forEach((s) => {
+      if (s.empNo) summaryByEmp[s.empNo] = s;
+    });
+
+    // ========== CREATE NEW WORKBOOK ==========
+    const wb = new ExcelJS.Workbook();
+
+    // ========== MAIN ESI SHEET ==========
+    const ws = wb.addWorksheet("ESI Export");
+
+    // ---------- TITLE ROW (MATCHES YOUR FORMAT) ----------
+    const monthLabel = `${year}${String(month).padStart(2, "0")}`;
+    const cycleLabel = cycle.label(year, month);
+
+    ws.addRow([`${policy.group} ${siteId} ESI FOR MONTH : ${cycleLabel}`]);
+
+    ws.getRow(1).font = { bold: true, size: 12 };
+
+    // ---------- HEADER ROW ----------
+    const headers = [
+      "Sl No",
+      "IP Number",
+      "Stno",
+      "IP Name",
+      "No of Days paid",
+      "Total Monthly Wages",
+      "ESI amt",
+      "Employer share (3.25%)",
+      "Total",
+    ];
+
+    ws.addRow(headers);
+
+    ws.getRow(2).font = { bold: true };
+    ws.getRow(2).alignment = { horizontal: "center" };
+
+    // Column widths similar to your sheet
+    ws.columns = [
+      { width: 6 },
+      { width: 12 }, // IP Number
+      { width: 8 }, // Stno
+      { width: 18 }, // Name
+      { width: 10 }, // Days paid
+      { width: 10 }, // Monthly wages
+      { width: 8 }, // esi amt
+      { width: 10 }, // employer share
+      { width: 8 }, // Total
+    ];
+
+    // ---------- ESI POLICY ----------
+    const esiPolicy =
+      typeof policy.esi === "object" && policy.esi[siteId]
+        ? policy.esi[siteId]
+        : policy.esi;
+
+    let totalESIBase = 0;
+    let totalEmpESI = 0;
+    let totalEmprESI = 0;
+    let totalPaidDays = 0;
+    let totalErngBaDa = 0;
+    let totalESITot = 0;
+
+    let sl = 1;
+    for (const emp of allEmployees) {
+      const summary = summaryByEmp[emp.empNo] || {};
+
+      const paidDays =
+        n(summary.totalPresentDays) +
+        n(summary.totalHoilidayWorkingDays) +
+        n(summary.totalCOffDays);
+
+      const dailyWage =
+        Number(emp.dailyWageRate) > 0
+          ? Number(emp.dailyWageRate)
+          : policy.dailyWageByCategory?.[emp.category] || 0;
+
+      // ===== BA + DA (THIS MUST GO TO "Total Monthly Wages") =====
+      const erngBaDa = dailyWage * paidDays;
+
+      // ===== Earn on Duty (same as wage sheet) =====
+      const erngOnDuty =
+        paidDays *
+        (typeof policy.erngOnDutyPerDay === "object"
+          ? policy.erngOnDutyPerDay[siteId] || 0
+          : policy.erngOnDutyPerDay || 0);
+
+      // ===== GROSS (for ceiling check — CORRECT) =====
+      const gross =
+        emp.salaryType === "FIXED"
+          ? Number(emp.salary || 0)
+          : dailyWage * totalDaysForSite;
+
+      if (
+        esiPolicy?.ceiling &&
+        gross > esiPolicy.ceiling &&
+        emp.esiApplicable !== true
+      ) {
+        continue;
+      }
+
+      const erngTotal = erngBaDa + erngOnDuty;
+
+      // ===== EXACT SAME ESI AS WAGE SHEET =====
+      const empESI = resolveESI(
+        erngBaDa,
+        erngOnDuty,
+        gross, // ✅ ceiling checked on GROSS (correct)
+        esiPolicy,
+        emp.esiApplicable, // ✅ preserves special case
+        erngTotal,
+      );
+
+      // --------- FILTER RULE (CLIENT APPROVED) ---------
+      // ❌ DO NOT REMOVE emp if BA+DA > 21000 when esiApplicable === true
+      if (empESI === 0 && emp.esiApplicable !== true) continue;
+
+      // Employer share derived consistently
+      const emprESI = (empESI / 0.0075) * 0.0325;
+      const totalESI = empESI + emprESI;
+
+      // ===== APPLY BA+DA CEILING ONLY FOR TOTAL COLUMN, NOT FOR ELIGIBILITY =====
+      const displayErngBaDa =
+        erngBaDa <= 21000 || emp.esiApplicable === true ? erngBaDa : 0;
+      if (displayErngBaDa === 0) continue;
+
+      totalPaidDays += paidDays;
+      totalErngBaDa += displayErngBaDa;
+      totalEmpESI += empESI;
+      totalEmprESI += emprESI;
+      totalESITot += totalESI;
+
+      ws.addRow([
+        sl++,
+        emp.ipNumber || 0, // IP Number
+        emp.empNo, // Stno
+        emp.name, // IP Name
+        paidDays, // No of Days paid
+        Math.round(displayErngBaDa), // ✅ BA+DA in "Total Monthly Wages"
+        Number(empESI.toFixed(2)), // ESI amt (matches wage sheet)
+        Number(emprESI.toFixed(2)), // Employer share
+        Number(totalESI.toFixed(2)), // Total
+      ]);
+    }
+
+    // ======== TOTAL ROW ========
+    const totalRow = ws.addRow([
+      "",
+      "", // IP Number
+      "", // Stno
+      "TOTAL", // Name column
+      Math.round(totalPaidDays),
+      Math.round(totalErngBaDa), // BA+DA total
+      Number(round2(totalEmpESI)),
+      Number(round2(totalEmprESI)),
+      Number(round2(totalESITot)),
+    ]);
+
+    // Make it bold like your wage sheet
+    totalRow.font = { bold: true };
+
+    // Apply borders to total row
+    totalRow.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = {
+        top: { style: "thin" },
+        bottom: { style: "thin" },
+        left: { style: "thin" },
+        right: { style: "thin" },
+      };
+
+      cell.alignment = {
+        vertical: "middle",
+        horizontal: "center",
+      };
+    });
+
+    // ========== SEND FILE ==========
+    const fileName = `ESI_${siteId}_${month}_${year}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+
+    applyBordersAndAutoHeight(ws);
+
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.exportPFECR = async (req, res, next) => {
+  try {
+    const { siteId } = req.params;
+    const year = Number(req.query.year);
+    const month = Number(req.query.month);
+
+    // ---------- VALIDATION ----------
+    if (!siteId || !year || !month) {
+      return res.status(400).json({ message: "siteId, year, month required" });
+    }
+
+    const role = (req.user?.role || "").toUpperCase();
+    if (role !== "ADMIN") {
+      return res.status(403).json({ message: "Only admin can export PF ECR" });
+    }
+
+    const policy = await resolveWagePolicy(siteId);
+    if (!policy.pf?.enabled) {
+      return res
+        .status(403)
+        .json({ message: "PF is not enabled for this site" });
+    }
+
+    const cycle = resolveAttendanceCycle(siteId);
+    const { start, end } = cycle.buildRange(Number(year), Number(month));
+
+    // build calendar days exactly like wage sheet
+    const days = [];
+    for (let d = new Date(start); d <= end; d = addDays(d, 1)) {
+      days.push(format(d, "yyyy-MM-dd"));
+    }
+
+    const sundaySet = new Set(
+      days.filter((iso) => new Date(iso).getDay() === 0),
+    );
+    const totalDaysForSite = days.length - sundaySet.size;
+
+    // ---------- LOAD EMPLOYEES ----------
+    const employees = await Employee.find({ site: siteId })
+      .sort({ name: 1 })
+      .lean();
+
+    const startStr = format(new Date(start), "yyyy-MM-dd");
+    const endStr = format(new Date(end), "yyyy-MM-dd");
+
+    const attDocs = await Attendance.find({
+      siteId,
+      date: { $gte: startStr, $lte: endStr },
+    }).lean();
+
+    // Build maps: statuses and ot
+    const attByEmp = {}; // { empNo: { iso: status } }
+
+    for (const doc of attDocs) {
+      const isoDate = format(new Date(doc.date), "yyyy-MM-dd");
+
+      if (!attByEmp[doc.empNo]) attByEmp[doc.empNo] = {};
+
+      if (doc.status) {
+        attByEmp[doc.empNo][isoDate] = doc.status;
+      }
+    }
+
+    if (!employees.length) {
+      return res
+        .status(404)
+        .json({ message: "No employees found for this site" });
+    }
+
+    // ---------- LOAD ATTENDANCE SUMMARY ----------
+    const summaries = await AttendanceSummary.find({
+      siteId,
+      year: Number(year),
+      month: Number(month),
+    }).lean();
+
+    const summaryByEmp = {};
+    summaries.forEach((s) => {
+      if (s.empNo) summaryByEmp[s.empNo] = s;
+    });
+
+    const holidayDocs = await Holiday.find({
+      site: siteId,
+      date: { $gte: startStr, $lte: endStr },
+    }).lean();
+
+    const holidaySet = new Set(
+      holidayDocs.map((h) => format(new Date(h.date), "yyyy-MM-dd")),
+    );
+
+    // ========== CREATE WORKBOOK ==========
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("PF ECR");
+    const cycleLabel = cycle.label(year, month);
+    ws.addRow([`${policy.group} ${siteId} EPF ECR FOR MONTH : ${cycleLabel}`]);
+
+    ws.getRow(1).font = { bold: true, size: 12 };
+
+    ws.views = [
+      {
+        state: "frozen",
+        ySplit: 2, // 👈 Freezes first 2 rows (title + header)
+      },
+    ];
+
+    // ---------- HEADER (CLIENT APPROVED) ----------
+    const headers = [
+      "Sl No",
+      "Staff Number",
+      "UAN",
+      "Member Name",
+      "Gross Wages",
+      "EPF Wages",
+      "EPS Wages",
+      "EDLI Wages",
+      "EPF Employee (12%)",
+      "EPS Employer (8.33%)",
+      "Employer (3.67%)",
+      "Refunds",
+      "NCP Days",
+      "Employee Payable (12%)",
+      "Employer Payable (12%)",
+      "Admin Charges (1%)",
+      "Total Payable",
+    ];
+
+    ws.addRow(headers);
+    ws.getRow(2).font = { bold: true };
+    ws.getRow(2).alignment = { horizontal: "center" };
+
+    ws.columns = [
+      { width: 6 },
+      { width: 8 },
+      { width: 14 },
+      { width: 22 },
+      { width: 10 },
+      { width: 10 },
+      { width: 10 },
+      { width: 10 },
+      { width: 10 },
+      { width: 10 },
+      { width: 10 },
+      { width: 8 },
+      { width: 8 },
+      { width: 10 }, // Employee Payable
+      { width: 10 }, // Employer Payable
+      { width: 10 }, // Admin Charges
+      { width: 10 }, // Total Payable
+    ];
+
+    ws.getColumn(3).numFmt = "@"; // Column 3 = UAN (Text format)
+
+    let totalGross = 0;
+    let totalEPFWages = 0;
+    let totalEPFEmp = 0;
+    let totalEPSEmpr = 0;
+    let totalEDLI = 0;
+    let totalNCP = 0;
+
+    let totalEmployeePayable = 0;
+    let totalEmployerPayable = 0;
+    let totalAdminCharges = 0;
+    let totalNetPayable = 0;
+
+    let sl = 1; // <-- NEW SERIAL COUNTER
+
+    for (const emp of employees) {
+      const summary = summaryByEmp[emp.empNo] || {};
+      const empAtt = attByEmp[emp.empNo] || {};
+
+      const presentDays = n(summary.totalPresentDays || 0);
+      const coffDays = n(summary.totalCOffDays || 0);
+      const empHolidayDays = calculateEmployeeHolidayDays({
+        days,
+        holidaySet,
+        sundaySet,
+        empAtt,
+        presentDays,
+      });
+
+      const paidDays = presentDays + coffDays + empHolidayDays;
+      const absDays = totalDaysForSite - paidDays;
+
+      const dailyWage =
+        Number(emp.dailyWageRate) > 0
+          ? Number(emp.dailyWageRate)
+          : policy.dailyWageByCategory?.[emp.category] || 0;
+
+      const erngBaDa = dailyWage * paidDays;
+
+      const pfWage = Math.min(erngBaDa, 15000);
+
+      const pfBase = resolveContributionBase(erngBaDa, 0, policy.pf);
+
+      const epfEmployee =
+        policy.pf?.enabled && emp?.pfApplicable !== false
+          ? Math.min(
+              pfBase * policy.pf.percent,
+              policy.pf.maxAmount || Infinity,
+            )
+          : 0;
+
+      const epsEmployer = pfWage * 0.0833;
+      const edliEmployer = pfWage * 0.0367;
+
+      const employeePayable = epfEmployee; // Column 14
+      const employerPayable = epsEmployer + edliEmployer; // Column 15
+      const adminCharges = round2(pfWage * 0.01); // 1% of EPF Wages (Column 6)
+      const totalPayable = employeePayable + employerPayable + adminCharges;
+
+      totalGross += erngBaDa;
+      totalEPFWages += pfWage;
+      totalEPFEmp += epfEmployee;
+      totalEPSEmpr += epsEmployer;
+      totalEDLI += edliEmployer;
+      totalNCP += absDays;
+
+      totalEmployeePayable += employeePayable;
+      totalEmployerPayable += employerPayable;
+      totalAdminCharges += adminCharges;
+      totalNetPayable += totalPayable;
+
+      ws.addRow([
+        sl++, // ✅ NEW: SL.NO
+        emp.empNo, // Staff Number
+        emp.uan ? String(emp.uan) : "N/A", // UAN
+        emp.name, // Member Name
+        round2(erngBaDa), // Gross Wages (BA+DA)
+        round2(pfWage), // EPF Wages
+        round2(pfWage), // EPS Wages
+        round2(pfWage), // EDLI Wages
+        round2(epfEmployee), // EPF Employee
+        round2(epsEmployer), // EPS Employer
+        roundDown(edliEmployer), // Employer 3.67%
+        0, // Refunds
+        absDays, // NCP Days
+        round2(employeePayable), // Employee Payable (12%)
+        round2(employerPayable), // Employer Payable (12%)
+        round2(adminCharges), // Admin Charges (1%)
+        round2(totalPayable), // Total Payable
+      ]);
+    }
+
+    // ===== TOTAL ROW =====
+    const totalRow = ws.addRow([
+      "",
+      "",
+      "",
+      "TOTAL",
+      round2(totalGross),
+      round2(totalEPFWages),
+      round2(totalEPFWages),
+      round2(totalEPFWages),
+      round2(totalEPFEmp),
+      round2(totalEPSEmpr),
+      round2(totalEDLI),
+      0,
+      round2(totalNCP),
+      round2(totalEmployeePayable),
+      round2(totalEmployerPayable),
+      round2(totalAdminCharges),
+      round2(totalNetPayable),
+    ]);
+
+    totalRow.font = { bold: true };
+
+    totalRow.eachCell((cell) => {
+      cell.border = {
+        top: { style: "thin" },
+        bottom: { style: "thin" },
+        left: { style: "thin" },
+        right: { style: "thin" },
+      };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+    });
+
+    // SEND FILE
+    const fileName = `PF_ECR_${siteId}_${month}_${year}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    applyBordersAndAutoHeight(ws);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    next(err);
+  }
+};
+
+function applyBordersAndAutoHeight(ws) {
+  const lastRow = ws.lastRow.number;
+  const lastCol = ws.columns.length;
+
+  for (let r = 2; r <= lastRow; r++) {
+    const row = ws.getRow(r);
+
+    row.eachCell({ includeEmpty: true }, (cell, col) => {
+      // Borders
+      cell.border = {
+        top: { style: "thin" },
+        bottom: { style: "thin" },
+        left: { style: "thin" },
+        right: { style: "thin" },
+      };
+
+      // Wrap text so height can auto-adjust
+      cell.alignment = {
+        vertical: "middle",
+        horizontal: col === 3 ? "left" : "center",
+        wrapText: true,
+      };
+    });
+
+    // Auto height based on content
+    row.height = undefined; // Let Excel auto-size based on wrapped text
+  }
+}
 
 function applySectionBorders(row) {
   const thickCols = [18, 33, 41];
@@ -670,6 +1268,7 @@ function resolveOtherDeduction({
   erngOnDuty,
   paidDays,
   otHours,
+  erngOtAmt,
 }) {
   const isFixed = salaryType === "FIXED";
 
@@ -691,8 +1290,9 @@ function resolveOtherDeduction({
 
   if (isKanihaTempMWB) {
     const minWage = Number(emp.tempMinWage);
+    const siteOtAmountPerHour = round2(minWage / 4);
 
-    const clientTotalPay = minWage * paidDays + (minWage / 4) * otHours;
+    const clientTotalPay = minWage * paidDays + siteOtAmountPerHour * otHours;
 
     const diff = erngTotal - clientTotalPay;
 
@@ -717,29 +1317,56 @@ function resolveOtherDeduction({
     return Math.round(emp.otherDeductionAmount);
   }
 
-  if (isFixed && emp?.grossIncludesDeductions !== true) {
-    return Math.round(erngOnBas + erngOnDuty);
-  }
+  // if (
+  //   (isFixed && emp?.grossIncludesDeductions !== true) ||
+  //   (emp?.grossIncludesDeductions !== true &&
+  //     emp?.otherDeductionsApplicable === true)
+  // ) {
+  //   return Math.round(erngOnBas + erngOnDuty+ erngOtAmt);
+  // }
+  const cfg =
+    emp.otherDeductionOverride || policy.otherDeductionComponents || {};
 
-  return 0;
+  let deduction = 0;
+
+  if (cfg.includeOnBasic) deduction += erngOnBas || 0;
+  if (cfg.includeOnDuty) deduction += erngOnDuty || 0;
+  if (cfg.includeOT) deduction += erngOtAmt || 0;
+
+  return Math.round(deduction);
 }
 
-function resolveESI(erngBaDa, erngOnDuty, gross, esiPolicy, esiApplicable) {
+function resolveESI(
+  erngBaDa,
+  erngOnDuty,
+  gross,
+  esiPolicy,
+  esiApplicable,
+  erngTotal,
+) {
   if (!esiPolicy?.enabled) return 0;
-
-  // 🔹 Deduction base is ALWAYS earned wages
-  const base = resolveContributionBase(erngBaDa, erngOnDuty, esiPolicy);
-  if (base <= 0) return 0;
 
   // 🔹 Ceiling blocks ONLY when esiApplicable is NOT explicitly true
   if (esiPolicy.applyCeiling !== false && esiApplicable !== true) {
-    if (esiPolicy.ceiling && gross >= esiPolicy.ceiling) {
+    if (esiPolicy.ceiling && gross > esiPolicy.ceiling) {
       return 0;
     }
   }
 
   // 🔹 If esiApplicable === false → never deduct
   if (esiApplicable === false) return 0;
+
+  let base = 0;
+
+  if (esiPolicy.esiBasedOnEarngTotal === true) {
+    // 🔵 DADRI behavior
+    base = erngTotal;
+  } else {
+    // 🔵 all other sites
+    base = resolveContributionBase(erngBaDa, erngOnDuty, esiPolicy);
+  }
+
+  if (!base || base <= 0) return 0;
 
   let amt = base * esiPolicy.percent;
 
@@ -754,4 +1381,68 @@ function resolveContributionBase(erngBaDa, erngOnDuty, policySection) {
   if (!policySection?.enabled) return 0;
 
   return policySection.includeOnDuty ? erngBaDa + erngOnDuty : erngBaDa;
+}
+
+function normalizeDesignation(desg = "") {
+  return desg.toUpperCase().replace(/\./g, "").replace(/\s+/g, "");
+}
+
+function resolveOTAmount({ siteId, emp, policy, otHours, dailyWage }) {
+  if (!otHours || otHours <= 0) return 0;
+
+  const otPolicy = policy.ot;
+
+  // ==============================
+  // 🔵 DESIGNATION BASED OT
+  // ==============================
+  if (
+    otPolicy?.type === "DESIGNATION" &&
+    otPolicy.ratePerHour &&
+    emp.designation
+  ) {
+    const norm = normalizeDesignation(emp.designation);
+    const key = DESIGNATION_KEY_MAP[norm];
+
+    if (key && otPolicy.ratePerHour[key]) {
+      return otHours * Number(otPolicy.ratePerHour[key]);
+    }
+  }
+
+  // ==============================
+  // 🔵 DIVISOR BASED OT (DEFAULT)
+  // ==============================
+  const divisor = otPolicy?.divisor || 4;
+  return (dailyWage / divisor) * otHours;
+}
+
+function calculateEmployeeHolidayDays({
+  days,
+  holidaySet,
+  sundaySet,
+  empAtt,
+  presentDays,
+}) {
+  if (!presentDays || presentDays === 0) {
+    return 0;
+  }
+  let holidayCount = 0;
+
+  for (const date of days) {
+    // must be site holiday
+    if (!holidaySet.has(date)) continue;
+
+    // skip Sundays
+    if (sundaySet.has(date)) continue;
+
+    const status = empAtt?.[date];
+
+    // ❌ absent → no holiday
+    if (status === "A") continue;
+
+    // ✅ holiday counted in all other cases
+    // H, HW, P, or even empty (default holiday)
+    holidayCount++;
+  }
+
+  return holidayCount;
 }

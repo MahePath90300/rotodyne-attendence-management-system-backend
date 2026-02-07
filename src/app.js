@@ -37,7 +37,7 @@ app.use(
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  })
+  }),
 );
 app.use(helmet());
 
@@ -45,9 +45,9 @@ app.use("/", indexRouter);
 app.use("/users", usersRouter);
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/attendance", attendanceRoute);
+app.use("/api/v1/wage", require("./routes/wage.routes"));
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.use(errorHandler);
-app.use("/api/v1/wage", require("./routes/wage.routes"));
 
 const generalLimiter = rateLimit({
   windowMs: 60 * 1000,
