@@ -67,6 +67,17 @@ exports.getSiteAttendance = async (req, res, next) => {
     const holidays = holidayDocs.map((h) => h.date); // ["2025-12-25", ...]
     const siteType = (employees[0] && employees[0].siteType) || "Supply";
 
+    const summaries = await AttendanceSummary.find({
+      siteId,
+      year,
+      month,
+    }).lean();
+
+    const summaryMap = {};
+    for (const s of summaries) {
+      summaryMap[s.empNo] = s;
+    }
+
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
 
     res.json({
@@ -75,6 +86,7 @@ exports.getSiteAttendance = async (req, res, next) => {
       employees,
       attendanceMap,
       otMap,
+      summaryMap,
       holidays,
       start,
       end,
@@ -235,7 +247,7 @@ exports.bulkUpdate = async function (req, res, next) {
     if (userRole === "SITE_ENGINEER") {
       await User.updateOne(
         { _id: req.user._id },
-        { $set: { lastSubmissionDate: nowIso } }
+        { $set: { lastSubmissionDate: nowIso } },
       );
       req.user.lastSubmissionDate = nowIso;
     }

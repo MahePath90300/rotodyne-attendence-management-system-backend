@@ -16,15 +16,17 @@ const AttendanceSummarySchema = new mongoose.Schema(
     totalCasualLeaves: { type: Number, default: 0 },
     totalDaysWorked: { type: Number, default: 0 },
     totalCalendarDays: { type: Number, default: 0 },
-    totalHolidays : {type:Number, default:0},
-    totalHoilidayWorkingDays:{type:Number, default:0}
+    totalHolidays: { type: Number, default: 0 },
+    totalHoilidayWorkingDays: { type: Number, default: 0 },
+    totalCOffDays: { type: Number, default: 0 },
+    siteDays: { type: Number, default: 0 },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 AttendanceSummarySchema.index(
   { siteId: 1, empNo: 1, year: 1, month: 1 },
-  { unique: true }
+  { unique: true },
 );
 
 module.exports = mongoose.model("AttendanceSummary", AttendanceSummarySchema);

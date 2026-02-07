@@ -23,25 +23,33 @@ const employeeSchema = new mongoose.Schema({
     required: true,
   },
   dailyWageRate: {
-  type: Number,
-  default: null, // null means "use policy/category"
-},
-grossIncludesDeductions:{
-  type:Boolean,
-  default:null
-},
-esiApplicable:{
-  type:Boolean,
-  default:true
-},
-otherDeductionsApplicable:{
-  type:Boolean,
-  default:true
-},
-otherDeductionAmount:{
-  type:Number,
-  default:null
-}
+    type: Number,
+    default: null, // null means "use policy/category"
+  },
+  grossIncludesDeductions: {
+    type: Boolean,
+    default: null,
+  },
+  esiApplicable: {
+    type: Boolean,
+    default: true,
+  },
+  otherDeductionsApplicable: {
+    type: Boolean,
+    default: true,
+  },
+  otherDeductionAmount: {
+    type: Number,
+    default: null,
+  },
+  siteDa: {
+    type: Number,
+    default: null,
+  },
+  pfApplicable: {
+    type: Number,
+    default: true,
+  },
 });
 
 employeeSchema.index({ site: 1, empNo: 1 }, { unique: true });
