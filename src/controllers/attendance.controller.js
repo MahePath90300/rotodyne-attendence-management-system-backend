@@ -4,16 +4,24 @@ const Holiday = require("../models/Holiday");
 const Attendance = require("../models/Attendance");
 const User = require("../models/User");
 const AttendanceSummary = require("../models/AttendanceSummary"); // NEW
-const { resolveAttendanceCycle } = require("../config/attendanceCycle.js");
+const { resolveAttendanceCycle } = require("../config/attendanceCycle");
+const ServiceMovement = require("../models/ServiceMovement");
+const { resolveWagePolicy } = require("../config/wagePolicy");
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
 function buildMonthWindow(year, month, siteId) {
+  if (!year || !month) {
+    throw new Error("Invalid year or month");
+  }
   const cycle = resolveAttendanceCycle(siteId);
   const { start, end } = cycle.buildRange(year, month);
 
+  if (!start || isNaN(start) || !end || isNaN(end)) {
+    throw new Error("Invalid date range generated");
+  }
   const days = [];
   for (let d = start; d <= end; d = addDays(d, 1)) {
     days.push(format(d, "yyyy-MM-dd"));
@@ -30,9 +38,14 @@ function buildMonthWindow(year, month, siteId) {
 exports.getSiteAttendance = async (req, res, next) => {
   try {
     const { siteId } = req.params;
-    const year = Number(req.query.year);
-    const month = Number(req.query.month);
+    const year = parseInt(req.query.year, 10);
+    const month = parseInt(req.query.month, 10);
 
+    if (!year || !month || month < 1 || month > 12) {
+      return res.status(400).json({
+        message: "Invalid year or month parameter",
+      });
+    }
     const { start, end, days } = buildMonthWindow(year, month, siteId);
 
     const employees = await Employee.find({ site: siteId })
@@ -43,6 +56,24 @@ exports.getSiteAttendance = async (req, res, next) => {
       siteId,
       date: { $gte: start, $lte: end },
     }).lean();
+
+    const movements = await ServiceMovement.find({
+      siteId,
+      date: { $gte: start, $lte: end },
+    });
+
+    const movementMap = {};
+
+    movements.forEach((m) => {
+      if (!movementMap[m.empNo]) movementMap[m.empNo] = {};
+
+      movementMap[m.empNo][m.date] = {
+        from: m.from,
+        to: m.to,
+        startTime: m.startTime,
+        endTime: m.endTime,
+      };
+    });
 
     const attendanceMap = {};
     const otMap = {};
@@ -64,7 +95,15 @@ exports.getSiteAttendance = async (req, res, next) => {
       date: { $gte: start, $lte: end },
     }).lean();
 
-    const holidays = holidayDocs.map((h) => h.date); // ["2025-12-25", ...]
+    const policy = await resolveWagePolicy(siteId);
+    const holidays = {};
+
+    for (const h of holidayDocs) {
+      holidays[h.date] = {
+        type: h.type,
+        description: h.description,
+      };
+    }
     const siteType = (employees[0] && employees[0].siteType) || "Supply";
 
     const summaries = await AttendanceSummary.find({
@@ -87,7 +126,9 @@ exports.getSiteAttendance = async (req, res, next) => {
       attendanceMap,
       otMap,
       summaryMap,
+      movementMap,
       holidays,
+      group: policy.group,
       start,
       end,
       days,
@@ -99,6 +140,7 @@ exports.getSiteAttendance = async (req, res, next) => {
 
 exports.bulkUpdate = async function (req, res, next) {
   try {
+    const { serviceMovements } = req.body;
     const { siteId } = req.params;
 
     const updates = Array.isArray(req.body.updates) ? req.body.updates : [];
@@ -178,6 +220,22 @@ exports.bulkUpdate = async function (req, res, next) {
       upsertMap.get(key).otHours = Number(o.hours) || 0;
     }
 
+    // AUTO ATTENDANCE FROM MOVEMENT
+    for (const empNo of Object.keys(serviceMovements || {})) {
+      const dates = serviceMovements[empNo];
+
+      for (const date of Object.keys(dates)) {
+        const m = dates[date];
+
+        const status = m.to === "HOME" || m.from === "HOME" ? "A" : "P";
+
+        const key = `${empNo}|${date}`;
+
+        if (!upsertMap.has(key)) upsertMap.set(key, {});
+        upsertMap.get(key).status = status;
+      }
+    }
+
     const bulkOps = [];
     for (const [key, fields] of upsertMap.entries()) {
       const [empNo, date] = key.split("|");
@@ -217,7 +275,54 @@ exports.bulkUpdate = async function (req, res, next) {
 
     if (bulkOps.length) {
       const bulkData = await Attendance.bulkWrite(bulkOps, { ordered: false });
-      console.log(bulkData);
+    }
+    // ============================
+    // SAVE SERVICE MOVEMENTS
+    // ============================
+
+    if (serviceMovements) {
+      const ops = [];
+
+      for (const empNo of Object.keys(serviceMovements)) {
+        const dates = serviceMovements[empNo];
+
+        for (const date of Object.keys(dates)) {
+          const m = dates[date];
+
+          if (!m?.from && !m?.to) continue;
+
+          const duration =
+            m.startTime && m.endTime
+              ? (new Date(`1970-01-01T${m.endTime}`) -
+                  new Date(`1970-01-01T${m.startTime}`)) /
+                60000
+              : 0;
+
+          ops.push({
+            updateOne: {
+              filter: { empNo, date },
+              update: {
+                $set: {
+                  empNo,
+                  siteId,
+                  date,
+                  from: m.from,
+                  to: m.to,
+                  startTime: m.startTime,
+                  endTime: m.endTime,
+                  durationMinutes: duration,
+                  updatedAt: new Date(),
+                },
+              },
+              upsert: true,
+            },
+          });
+        }
+      }
+
+      if (ops.length) {
+        await ServiceMovement.bulkWrite(ops);
+      }
     }
 
     // Persist summaries (upsert-like)

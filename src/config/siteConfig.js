@@ -5,6 +5,7 @@ const SITE_CONFIG = {
   GADARWARA: { cycle: "26_25" },
   DADRI: { cycle: "26_25" },
   KANIHA: { cycle: "26_25" },
+  LARA: { cycle: "26_25" },
 
   // =====================
   // Calendar month sites
@@ -22,6 +23,8 @@ const SITE_CONFIG = {
   IEPLOPER: { cycle: "CALENDAR" },
   MECONNMDC: { cycle: "CALENDAR" },
   RCFTHAL9253: { cycle: "CALENDAR" },
+  SERVICES: { cycle: "CALENDAR" },
+  IOCLGJCGP: { cycle: "CALENDAR" },
 
   // ✅ JPL sites (NEW)
   "JPLSBOP 9541": { cycle: "21_20" },

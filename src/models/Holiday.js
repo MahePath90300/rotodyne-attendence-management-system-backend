@@ -5,7 +5,7 @@ const holidaySchema = new mongoose.Schema({
   date: { type: String, required: true }, // YYYY-MM-DD
   type: {
     type: String,
-    enum: ["SUNDAY", "HOLIDAY", "OFF"],
+    enum: ["SUNDAY", "HOLIDAY", "OFF", "NATIONAL HOLIDAY", "FESTIVAL HOLIDAY"],
     default: "HOLIDAY",
   },
   description: String,

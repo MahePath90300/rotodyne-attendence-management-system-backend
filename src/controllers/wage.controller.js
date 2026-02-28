@@ -9,6 +9,7 @@ const AttendanceSummary = require("../models/AttendanceSummary");
 const { resolveWagePolicy } = require("../config/wagePolicy");
 const { resolveAttendanceCycle } = require("../config/attendanceCycle");
 const { header } = require("express-validator");
+const wageService = require("../Services/wage.service");
 
 const FILL = {
   ATTENDANCE: { argb: "FFE8F2FF" }, // light blue
@@ -86,6 +87,10 @@ const WAGE_HEADERS = [
   "Dedn Total",
 
   "Net Payable",
+  "F&F",
+  "Empr PF",
+  "Empr ESI",
+  "Total CTC",
 ];
 
 function calculateDailyWage(Employee, paidDays, DAILY_WAGE_BY_CAT) {
@@ -405,11 +410,17 @@ exports.exportSiteWageSheet = async (req, res, next) => {
             )
           : 0;
 
+      const dednEPFIncAdmin =
+        policy.pf?.enabled && emp?.pfApplicable !== false
+          ? Math.min(pfBase * 0.12, policy.pf.maxAmount || Infinity) +
+            pfBase * 0.01
+          : 0;
+
       const paidDaysWage = Math.max(0, paidDays) * dailyWage;
       const dednLon = 0;
       const dednTds = 0;
       const dednAdv = 0;
-      const dednPtax = 0;
+      const dednPtax = (paidDays !== 0 ? emp?.pTax : 0) ?? 0;
 
       const dednOther = resolveOtherDeduction({
         emp,
@@ -444,6 +455,51 @@ exports.exportSiteWageSheet = async (req, res, next) => {
       } else {
         netPayable = Math.floor(erngTotal - dednTotal);
       }
+      const fnfPolicy = policy.fnf || {};
+
+      let leaveEncashment = 0;
+      let refreshment = 0;
+      let noticePay = 0;
+      let bonus = 0;
+
+      if (fnfPolicy.enabled !== false && !fnfPolicy.includedInOnBasic) {
+        if (fnfPolicy.components?.leaveEncashment) {
+          leaveEncashment = erngBaDa * 0.05;
+        }
+
+        if (fnfPolicy.components?.refreshment) {
+          refreshment = erngBaDa * 0.049;
+        }
+
+        if (fnfPolicy.components?.noticePay) {
+          noticePay = erngBaDa * 0.049;
+        }
+        if (fnfPolicy.components?.bonus) {
+          bonus = erngBaDa * 0.0833;
+        }
+      }
+
+      const totalFnf = leaveEncashment + refreshment + noticePay + bonus;
+      const totalFnfR =
+        round2(leaveEncashment) +
+        round2(refreshment) +
+        round2(noticePay) +
+        round2(bonus);
+
+      const employerPF = round2(dednEPFIncAdmin);
+      const employerESI = round2(Number((dednESI / 0.0075) * 0.0325)) || 0;
+
+      const salary = round2(erngSubTot1);
+      const allowances =
+        erngOnBasR + erngOnDutyR + erngSiteDa + erngOtherPay + erngArrear;
+
+      const totalCTC =
+        salary +
+        erngOtAmtR +
+        round2(allowances) +
+        totalFnfR +
+        employerPF +
+        employerESI;
 
       const absDays = totalDays - paidDays;
 
@@ -491,6 +547,10 @@ exports.exportSiteWageSheet = async (req, res, next) => {
         round2(dednOther), // Ded oth
         round2(dednTotal), // Dedn total
         netPayable, // Net payable
+        round2(totalFnf), //F&F
+        employerPF, //employer pf
+        employerESI, //employer ESI
+        totalCTC,
       ];
 
       rowValues.forEach((val, idx) => {
@@ -520,7 +580,14 @@ exports.exportSiteWageSheet = async (req, res, next) => {
           };
         }
 
-        if (colNumber === 29 || colNumber === 30) {
+        if (
+          colNumber === 29 ||
+          colNumber === 30 ||
+          colNumber === 43 ||
+          colNumber === 44 ||
+          colNumber === 45 ||
+          colNumber === 46
+        ) {
           cell.font = {
             color: { argb: "FFFF0000" }, // red
             bold: true,
@@ -1272,10 +1339,19 @@ function resolveOtherDeduction({
 }) {
   const isFixed = salaryType === "FIXED";
 
-  const otherDednApplicable =
-    !isFixed || emp.otherDeductionsApplicable !== false;
+  // const otherDednApplicable =
+  //   !isFixed || emp.otherDeductionsApplicable !== false;
 
-  if (!policy.dednOtherEnabled || !otherDednApplicable) {
+  // if (!policy.dednOtherEnabled || !otherDednApplicable) {
+  //   return 0;
+  // }
+  // Site level switch
+  if (!policy.dednOtherEnabled) {
+    return 0;
+  }
+
+  // Employee must explicitly allow deduction
+  if (emp.otherDeductionsApplicable !== true) {
     return 0;
   }
 
@@ -1324,8 +1400,13 @@ function resolveOtherDeduction({
   // ) {
   //   return Math.round(erngOnBas + erngOnDuty+ erngOtAmt);
   // }
-  const cfg =
-    emp.otherDeductionOverride || policy.otherDeductionComponents || {};
+  const cfg = emp.otherDeductionOverride
+    ? emp.otherDeductionOverride
+    : policy.otherDeductionComponents || {};
+
+  if (!cfg || Object.keys(cfg).length === 0) {
+    return 0;
+  }
 
   let deduction = 0;
 
@@ -1446,3 +1527,46 @@ function calculateEmployeeHolidayDays({
 
   return holidayCount;
 }
+
+exports.previewSiteWageSheet = async (req, res, next) => {
+  try {
+    const { siteId } = req.params;
+    const year = Number(req.query.year);
+    const month = Number(req.query.month);
+    const policy = await resolveWagePolicy(siteId);
+
+    if (!siteId || !year || !month) {
+      return res.status(400).json({ message: "siteId, year, month required" });
+    }
+
+    const data = await wageService.generateSiteWageData({
+      siteId,
+      year,
+      month,
+    });
+
+    // ✅ SAFE SUMMARY CALCULATION
+    const summary = {
+      totalPayout: data.rows.reduce((a, r) => a + (r.netPayable || 0), 0),
+      totalDeductions: data.rows.reduce((a, r) => a + (r.dednTotal || 0), 0),
+      totalCTC: data.rows.reduce((a, r) => a + (r.totalCTC || 0), 0),
+    };
+
+    // ✅ IMPORTANT — SEND RESPONSE
+    return res.status(200).json({
+      siteId: data.siteId,
+      year: data.year,
+      month: data.month,
+      cycle: data.cycle,
+      rows: data.rows,
+      summary,
+      features: {
+        esiEnabled: policy?.esi?.enabled === true,
+        pfEnabled: policy?.pf?.enabled === true,
+      },
+    });
+  } catch (err) {
+    console.error("Preview error:", err);
+    next(err);
+  }
+};

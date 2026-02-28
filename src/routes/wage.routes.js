@@ -4,6 +4,12 @@ const authMiddleware = require("../middlewares/authMiddleware");
 const wageController = require("../controllers/wage.controller");
 
 router.get(
+  "/site/:siteId/preview",
+  authMiddleware,
+  wageController.previewSiteWageSheet,
+);
+
+router.get(
   "/site/:siteId/export",
   authMiddleware,
   wageController.exportSiteWageSheet,

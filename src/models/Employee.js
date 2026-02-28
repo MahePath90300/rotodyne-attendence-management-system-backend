@@ -36,7 +36,7 @@ const employeeSchema = new mongoose.Schema({
   },
   otherDeductionsApplicable: {
     type: Boolean,
-    default: true,
+    default: false,
   },
   otherDeductionAmount: {
     type: Number,
